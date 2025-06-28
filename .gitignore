@@ -1,0 +1,34 @@
+# Exclude all .zip files
+*.zip
+
+.runenv
+
+# Exclude all files inside the bhavcopies directory
+bhavcopies/
+
+build/
+dist/
+
+# Exclude Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+
+# Exclude Jupyter notebook checkpoints (if any)
+.ipynb_checkpoints/
+
+# Exclude Excel and CSV files not used as source data
+*.xls
+*.xlsx
+*.csv
+
+# Exclude VSCode settings (optional)
+.vscode/
+
+# Exclude default config and output files
+defaults.json
+close_prices_dataframe.csv
+
+# Exclude OS-specific files
+.DS_Store
+Thumbs.db
