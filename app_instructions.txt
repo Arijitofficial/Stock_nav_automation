@@ -1,0 +1,128 @@
+# Instructions for Using the DrillDownApp Executable
+
+This document provides detailed instructions and important constraints for using the `.exe` files generated from this project (such as `DrillDownApp.exe`). Please read all sections carefully to ensure smooth operation and avoid common errors.
+
+---
+
+## 1. Prerequisites
+
+- **Windows OS:** The `.exe` files are built for Windows.
+- **Required Files and Folders:**
+  - `Excels/` folder must exist in the same directory as the `.exe` file.
+  - `Excels/sales_purchase_data.xlsx` (optional).
+  - `Excels/drill_down_track.csv` (required for drill down operation app).
+  - `Excels/symbolchange.csv` (for symbol change handling).
+- **Do NOT open any Excel or CSV files used by the app in another program (like Excel) while the app is running.** This can cause file access errors or data corruption.
+
+---
+
+## 2. File and Folder Structure
+
+```
+project_root/
+│
+├─ DrillDownApp.exe
+├─ Utils/
+│    ├─ drill_down_util.py
+│    ├─ sales_purchase_util.py
+│    └─ symbol_change_handler.py
+├─ down_close_price_data.py
+├─ Excels/
+│    ├─ sales_purchase_data.xlsx
+│    ├─ drill_down_track.csv
+│    └─ symbolchange.csv
+├─ drill_downs/         # Output folder for generated CSVs
+├─ close_prices_dataframe.csv
+└─ defaults.json
+```
+
+- **All required files must be present and accessible.**
+- **The `Utils/` folder and its contents must be in the same directory as the `.exe` file.**
+
+---
+
+## 3. Usage Instructions
+
+### A. Running the Main Stock Analysis App
+
+1. **Double-click** the generated `.exe` (e.g., `DrillDownApp.exe`) or run it from the command prompt.
+2. **Select the main Excel file** containing your portfolio data when prompted.
+3. **(Optional) Select the sales/purchase Excel file** if you want to track broker-wise transactions.
+4. **Enter the sheet name** as present in your Excel file.
+5. **Enter the date range** for analysis.
+6. **Wait for the process to complete.** Progress bars and popups will indicate the status.
+7. **Do not close the app or open any involved files until the process is finished.**
+
+### B. Running the Drill Down CSV Generator
+
+1. **Double-click** the `.exe` or run it from the command prompt.
+2. **Select the start and end dates** using the date pickers.
+3. **Click "Generate CSV".**
+4. The filtered CSV will be saved in the `drill_downs/` folder.
+
+---
+
+## 4. Important Constraints and Best Practices
+
+- **File Locks:**  
+  - Ensure that `sales_purchase_data.xlsx`, `drill_down_track.csv`, and any other files being read or written by the app are **not open in Excel or any other program** during execution.
+  - If a file is open elsewhere, the app may fail to read/write or may crash.
+
+- **Required Data Files:**  
+  - `Excels/symbolchange.csv` must be present and up-to-date for symbol change handling.
+  - `Excels/drill_down_track.csv` must exist for drill down operations. If not present, create an empty file with the correct columns or let the app initialize it.
+  - `Excels/sales_purchase_data.xlsx` is required for sales/purchase tracking. If not present, the app will attempt to create it, but ensure the folder exists.
+
+- **Excel File Format:**  
+  - The main Excel file must have the expected columns (e.g., "Cat", "NSE Name ", "Symbol", "Name of Shares", "Broker", "DOP", "S. Date", "Cost/Sh", "No. ", "Net Cost", "Net Sale", "File").
+  - Sheet names must match exactly (case-sensitive).
+
+- **Output Files:**  
+  - Generated CSVs will be saved in the `drill_downs/` folder.
+  - The app may update or overwrite `close_prices_dataframe.csv` and `defaults.json`.
+
+- **Date Formats:**  
+  - Dates must be entered in `YYYY-MM-DD` format.
+  - The app will validate and parse dates, but incorrect formats may cause errors.
+
+- **Symbol Change Handling:**  
+  - The file `Excels/symbolchange.csv` must have columns: `name`, `old_symbol`, `new_symbol`, `date`.
+  - The app uses this file to map and update stock symbols over time.
+
+- **Do Not Move or Rename Files/Folders:**  
+  - The `.exe` expects the folder structure and file names as described above.
+  - Moving or renaming files/folders may cause the app to fail.
+
+- **Permissions:**  
+  - Ensure you have read/write permissions for all files and folders used by the app.
+
+- **Backups:**  
+  - Regularly back up your Excel and CSV files to prevent accidental data loss.
+
+---
+
+## 5. Troubleshooting
+
+- **File Not Found Errors:**  
+  - Check that all required files are present in the correct locations.
+  - Ensure folder names and file names are spelled correctly.
+
+- **Permission Denied Errors:**  
+  - Close all Excel/CSV files before running the app.
+  - Run the app as administrator if needed.
+
+- **Data Not Updating:**  
+  - Ensure you are not using cached or old files.
+  - Delete or move old output files if necessary.
+
+- **Unexpected Crashes:**  
+  - Check the format and contents of your input files.
+  - Review the error messages for missing columns or invalid data.
+
+---
+
+## 6. Contact
+
+For further support, please contact the project maintainer or raise an issue in the repository.
+
+---
