@@ -49,15 +49,13 @@ def save_sales_purchase_dict(sales_purchase_dict, filename='./Excels/sales_purch
                 if sheet_name in existing_data:
                     # Merge existing and new data, ensuring no overlap
                     existing_df = existing_data[sheet_name]
-                    
-                    # Find the maximum date in the existing DataFrame and convert it to Timestamp
-                    max_date = pd.to_datetime(existing_df['Date'].max())
-                    
-                    # Ensure new_df['Date'] is also of Timestamp type
+
+                    # Ensure 'Date' columns are of datetime type
+                    existing_df['Date'] = pd.to_datetime(existing_df['Date'])
                     new_df['Date'] = pd.to_datetime(new_df['Date'])
-                    
-                    # Filter new_df to only include entries after the maximum date
-                    non_overlapping_df = new_df[new_df['Date'] > max_date]
+
+                    # Filter new_df to only include entries with dates not already present in existing_df
+                    non_overlapping_df = new_df[~new_df['Date'].isin(existing_df['Date'])]
                     
                     # Concatenate existing data with non-overlapping new data
                     combined_df = pd.concat([existing_df, non_overlapping_df], ignore_index=True)
@@ -66,6 +64,7 @@ def save_sales_purchase_dict(sales_purchase_dict, filename='./Excels/sales_purch
                     combined_df = new_df
                 
                 # Save the combined DataFrame to the Excel file
+                combined_df = combined_df.sort_values(by='Date', key=lambda x: pd.to_datetime(x, errors='coerce')).reset_index(drop=True)
                 combined_df.to_excel(writer, sheet_name=sheet_name, index=False)
         
         print(f"File '{filename}' updated with new data without duplicating overlapping days.")

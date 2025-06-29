@@ -8,6 +8,8 @@ bhavcopies/
 
 build/
 dist/
+app/
+apps/
 
 # Exclude Python cache and compiled files
 __pycache__/
@@ -32,3 +34,4 @@ close_prices_dataframe.csv
 # Exclude OS-specific files
 .DS_Store
 Thumbs.db
+

@@ -59,4 +59,9 @@ def init_drill_down_df(filename = "Excels/drill_down_track.csv"):
         return check_and_create_drill_down_track_df()
     
 def save_drill_down_df(drill_down_df, filename="Excels/drill_down_track.csv"):
+
+    drill_down_df = drill_down_df.sort_values(
+        by="date",
+        key=lambda col: pd.to_datetime(col, errors="coerce", dayfirst=True)
+    )
     drill_down_df.to_csv(filename, index=False)
