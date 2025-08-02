@@ -9,7 +9,6 @@ bhavcopies/
 build/
 dist/
 app/
-apps/
 
 # Exclude Python cache and compiled files
 __pycache__/
