@@ -22,6 +22,7 @@ __pycache__/
 *.xls
 *.xlsx
 *.csv
+*.exe
 
 # Exclude VSCode settings (optional)
 .vscode/
