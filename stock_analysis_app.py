@@ -9,9 +9,12 @@ from tkinter import ttk, filedialog, messagebox
 from dateutil.parser import parse
 from Utils.sales_purchase_util import init_dict, save_sales_purchase_dict
 from Utils.drill_down_util import enter_track, init_drill_down_df, save_drill_down_df
+from Utils.split_n_merge_handler import extract_face_values, get_latest_CFCA_file, is_face_value_action
+from Utils.corporate_actions_handler import CorporateActionsHandler
 from down_close_price_data import create_stock_price_df
 from Utils.symbol_change_handler import map_symbols
 import threading
+
 
 class StockAnalysisApp:
     def __init__(self, root):
@@ -34,6 +37,9 @@ class StockAnalysisApp:
         self.drill_down_df = None
         self.close_price_df = None
         self.brokers = []
+
+        self.cfca_handler = CorporateActionsHandler("Excels")
+        self.volume_adjustments = {}
 
         # Start the app with the file input screen
         self.file_input_and_sheet_name_screen()
@@ -263,14 +269,21 @@ class StockAnalysisApp:
         total_days = (self.end_date - self.start_date).days + 1
         progress_bar["maximum"] = total_days
 
+
         def process():
             update_frequency = 5  # Update progress bar every 10 days
             days_processed = 0
             current_date = self.start_date
             temp_df = self.df.copy()
+            original_volume = temp_df['No. '].copy()
+
+            # adjusting volume back to current date state
+            temp_df = self.cfca_handler.reverse_actions(df=temp_df, start_date=str(current_date))
+
             unlisted_shares = {}
             
             while current_date <= self.end_date:
+                temp_df = self.cfca_handler.apply_tday_actions(temp_df, current_date=str(current_date))
                 days_processed += 1
                 is_sp_handled = False
                 if days_processed % update_frequency == 0 or current_date == self.end_date:
@@ -388,6 +401,7 @@ class StockAnalysisApp:
             
             progress_window.destroy()
 
+            temp_df["No. "] = original_volume
             with pd.ExcelWriter(self.file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
                 temp_df.to_excel(writer, sheet_name=self.sheet_name, index=False)
             

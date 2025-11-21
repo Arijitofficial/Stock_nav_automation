@@ -42,10 +42,10 @@ You can create a standalone Windows desktop app using PyInstaller.
 **Run this command from the project root:**
 
 ```
-pyinstaller --noconsole --windowed --onefile --name "DrillDownApp" ^
---add-data "Utils;Utils" --add-data "down_close_price_data.py;." ^
---distpath app ^
-drill_down_app.py
+pyinstaller --noconsole --windowed --onefile --name "DrillDownApp" --add-data "Utils;Utils" --add-data "down_close_price_data.py;." --distpath modified_app drill_down_app.py
+
+
+pyinstaller --noconsole --windowed --onefile --name "StockAnalysisApp" --add-data "Utils;Utils" --add-data "down_close_price_data.py;." --distpath modified_app stock_analysis_app.py
 ```
 
 *On Windows Command Prompt, use `^` for line continuation. On PowerShell or Linux, use `\`.*
