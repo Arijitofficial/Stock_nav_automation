@@ -1,4 +1,9 @@
-from datetime import timedelta
+"""
+Stock Analysis Application - Refactored for Performance and Maintainability
+"""
+from datetime import timedelta, date
+from typing import Dict, Optional, List, Tuple
+from dataclasses import dataclass
 import json
 import os
 import sys
@@ -7,431 +12,837 @@ import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from dateutil.parser import parse
-from Utils.sales_purchase_util import init_dict, save_sales_purchase_dict
-from Utils.drill_down_util import enter_track, init_drill_down_df, save_drill_down_df
-from Utils.split_n_merge_handler import extract_face_values, get_latest_CFCA_file, is_face_value_action
-from Utils.corporate_actions_handler import CorporateActionsHandler
-from down_close_price_data import create_stock_price_df
-from Utils.symbol_change_handler import map_symbols
 import threading
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AppConfig:
+    """Application configuration"""
+    config_file: str = "defaults.json"
+    main_file_path: str = ""
+    sales_purchase_file_path: str = ""
+    sheet_name: str = ""
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    
+    @classmethod
+    def load(cls, config_file: str = "defaults.json") -> 'AppConfig':
+        """Load configuration from file"""
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, "r") as f:
+                    data = json.load(f)
+                    return cls(
+                        config_file=config_file,
+                        main_file_path=data.get("main_file_path", ""),
+                        sales_purchase_file_path=data.get("sales_purchase_file_path", ""),
+                        sheet_name=data.get("sheet_name", "")
+                    )
+            except Exception as e:
+                logger.error(f"Failed to load config: {e}")
+        return cls(config_file=config_file)
+    
+    def save(self):
+        """Save configuration to file"""
+        try:
+            with open(self.config_file, "w") as f:
+                json.dump({
+                    "main_file_path": self.main_file_path,
+                    "sales_purchase_file_path": self.sales_purchase_file_path,
+                    "sheet_name": self.sheet_name
+                }, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+
+
+class DataLoader:
+    """Handles loading and preprocessing of data"""
+    
+    @staticmethod
+    def load_main_dataframe(file_path: str, sheet_name: str) -> pd.DataFrame:
+        """Load and preprocess main dataframe"""
+        try:
+            df = pd.read_excel(file_path, sheet_name, engine='openpyxl')
+            
+            # Filter by category
+            df = df[df["Cat"].str.lower().isin(['normal', 'others'])]
+            
+            # Fill NSE Name forward and backward within groups
+            df["NSE Name "] = df.groupby("Name of Shares")["NSE Name "].transform(
+                lambda x: x.fillna(method='ffill').fillna(method='bfill')
+            )
+            
+            # Handle broker names
+            
+            df["Broker"].fillna("unknown", inplace=True)
+            df["Broker"] = df["Broker"].str.replace(r"(?i)\bone\b", "IIFL", regex=True)
+            
+            # Convert dates
+            df['DOP'] = pd.to_datetime(df['DOP'], errors='coerce')
+            df['S. Date'] = pd.to_datetime(df['S. Date'], errors='coerce')
+            
+            logger.info(f"Loaded {len(df)} records from {sheet_name}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to load dataframe: {e}")
+            raise
+    
+    @staticmethod
+    def get_unique_brokers(df: pd.DataFrame) -> List[str]:
+        logger.info(f"Loaded unique broker records")
+        """Extract unique broker names"""
+        return df["Broker"].unique().tolist()
+    
+
+
+class PriceDataManager:
+    """Manages stock price data fetching and caching"""
+    
+    def __init__(self, start_date: date, end_date: date):
+        self.start_date = start_date
+        self.end_date = end_date
+        self.price_df = None
+    
+    def prepare_ticker_mapping(self, df: pd.DataFrame) -> Tuple[List[str], pd.DataFrame]:
+        """Prepare ticker symbols and mapping dataframe"""
+        filtered_df = df[
+            df['S. Date'].isna() | (df['S. Date'].dt.date > self.start_date)
+        ] if self.start_date else df
+        
+        unique_df = filtered_df[['NSE Name ', 'Symbol', 'Name of Shares']].drop_duplicates()
+        
+        # Create ticker symbols
+        unique_df['ticker'] = unique_df.apply(
+            lambda row: f"{row['NSE Name ']}.NS" if row['Symbol'] == "NSE" 
+                       else f"{row['NSE Name ']}.BO",
+            axis=1
+        )
+        
+        return list(set(unique_df['ticker'])), unique_df
+    
+    def fetch_prices(self, tickers: List[str]) -> pd.DataFrame:
+        """Fetch price data for given tickers"""
+        from Utils.symbol_change_handler import map_symbols
+        from down_close_price_data import create_stock_price_df
+        
+        logger.info(f"Fetching prices for {len(tickers)} tickers")
+        
+        symbols_dict = map_symbols(
+            tickers, 
+            start_date=str(self.start_date), 
+            end_date=str(self.end_date)
+        )
+        
+        self.price_df = create_stock_price_df(
+            start_date=str(self.start_date),
+            end_date=str(self.end_date),
+            keys=tickers,
+            symbols_dict=symbols_dict
+        )
+        
+        # Cache to disk
+        self.price_df.to_csv("close_prices_dataframe.csv", index=False)
+        logger.info("Price data fetched and cached")
+        
+        return self.price_df
+    
+    def get_price(self, symbol: str, date_str: str) -> Optional[float]:
+        """Get closing price for a symbol on a specific date"""
+        if self.price_df is None:
+            return None
+        
+        try:
+            if symbol in self.price_df['ticker'].values:
+                if date_str in self.price_df.columns:
+                    price = self.price_df.loc[
+                        self.price_df['ticker'] == symbol, date_str
+                    ].values[0]
+                    
+                    return None if pd.isna(price) else float(price)
+        except Exception as e:
+            logger.warning(f"Error getting price for {symbol} on {date_str}: {e}")
+        
+        return None
+
+
+class PortfolioCalculator:
+    """Handles portfolio calculations and NAV computation"""
+    
+    def __init__(self, brokers: List[str], cfca_handler):
+        self.brokers = ["Overall"] + list(brokers)
+        self.cfca_handler = cfca_handler
+        
+    def initialize_metrics(self) -> Dict[str, Dict[str, float]]:
+        """Initialize broker-wise metrics"""
+        return {
+            'values': {broker: 0.0 for broker in self.brokers},
+            'sales': {broker: 0.0 for broker in self.brokers},
+            'purchases': {broker: 0.0 for broker in self.brokers},
+            'net_fund': {broker: 0.0 for broker in self.brokers},
+            'units': {broker: 0.0 for broker in self.brokers},
+            'nav': {broker: 0.0 for broker in self.brokers}
+        }
+    
+    def calculate_holding_value(
+        self, 
+        row: pd.Series, 
+        closing_price: float,
+        current_date: date
+    ) -> Tuple[float, bool]:
+        """Calculate value for a single holding"""
+        market_value = closing_price * row['No. ']
+        is_sold = (pd.notna(row['S. Date']) and 
+                   row['S. Date'].date() == current_date)
+        
+        return market_value, is_sold
+    
+    def update_nav(
+        self,
+        broker: str,
+        current_value: float,
+        purchase: float,
+        sale: float,
+        prev_unit: float,
+        prev_nav: float,
+        prev_value: float
+    ) -> Tuple[float, float]:
+        """Calculate NAV and units for a broker"""
+        net_fund = purchase - sale
+        
+        # Handle zero previous NAV
+        if prev_nav == 0:
+            prev_nav = 1000.0
+        
+        # Calculate units
+        if prev_value != 0:
+            units = prev_unit + (net_fund / prev_nav)
+        else:
+            units = current_value / prev_nav
+        
+        # Calculate NAV
+        nav = current_value / units if units != 0 else 0.0
+        
+        # Handle zero value case
+        if current_value == 0:
+            units = 0.0
+            nav = 0.0
+        
+        return units, nav
+
+
+class PortfolioProcessor:
+    """Main processor for portfolio analysis"""
+    
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        config: AppConfig,
+        brokers: List[str],
+        price_manager: PriceDataManager,
+        cfca_handler
+    ):
+        self.df = df
+        self.config = config
+        self.brokers = brokers
+        self.price_manager = price_manager
+        self.cfca_handler = cfca_handler
+        self.calculator = PortfolioCalculator(brokers, cfca_handler)
+        
+        # Initialize data structures
+        self.sales_purchase_dict = self._init_sales_purchase_dict()
+        self.drill_down_df = self._init_drill_down_df()
+    
+    def _init_sales_purchase_dict(self) -> Dict[str, pd.DataFrame]:
+        """Initialize sales/purchase tracking dictionary"""
+        from Utils.sales_purchase_util import init_dict
+        return init_dict(
+            file_path=self.config.sales_purchase_file_path,
+            broker_names=self.brokers
+        )
+    
+    def _init_drill_down_df(self) -> pd.DataFrame:
+        """Initialize drill-down dataframe"""
+        from Utils.drill_down_util import init_drill_down_df
+        return init_drill_down_df()
+    
+    def process(self, progress_callback=None) -> bool:
+        """Process portfolio data day by day"""
+        try:
+            total_days = (self.config.end_date - self.config.start_date).days + 1
+            current_date = self.config.start_date
+            
+            # Work on a copy
+            temp_df = self.df.copy()
+            original_volume = temp_df['No. '].copy()
+            
+            # Reverse corporate actions to start state
+            temp_df = self.cfca_handler.reverse_actions(
+                df=temp_df, 
+                start_date=str(current_date)
+            )
+            
+            days_processed = 0
+            update_frequency = 5
+            
+            while current_date <= self.config.end_date:
+                # Apply corporate actions for current day
+                temp_df = self.cfca_handler.apply_tday_actions(
+                    temp_df, 
+                    current_date=str(current_date)
+                )
+                
+                # Process day
+                success = self._process_single_day(temp_df, current_date)
+                
+                if not success:
+                    logger.warning(f"Skipping day {current_date} due to missing data")
+                
+                # Update progress
+                days_processed += 1
+                if progress_callback and (days_processed % update_frequency == 0 or 
+                                         current_date == self.config.end_date):
+                    progress_callback(days_processed, total_days)
+                
+                current_date += timedelta(days=1)
+            
+            # Restore original volumes and save
+            temp_df["No. "] = original_volume
+            self._save_results(temp_df)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Processing failed: {e}", exc_info=True)
+            return False
+    
+    def _process_single_day(self, df: pd.DataFrame, current_date: date) -> bool:
+        """Process portfolio for a single day"""
+        metrics = self.calculator.initialize_metrics()
+        holdings_processed = 0
+        
+        current_date_dt = pd.Timestamp(current_date)
+        
+        for index, row in df.iterrows():
+            # Skip if not owned on this date
+            if row['DOP'] > current_date_dt:
+                continue
+            
+            if pd.notna(row['S. Date']) and row['S. Date'] < current_date_dt:
+                continue
+            
+            # Get closing price
+            symbol = row['NSE Name ']
+            if pd.isna(symbol):
+                continue
+            
+            symbol_ns = symbol + (".NS" if row['Symbol'] == "NSE" else ".BO")
+            date_str = current_date.strftime("%Y-%m-%d")
+            
+            closing_price = self.price_manager.get_price(symbol_ns, date_str)
+            
+            if closing_price is None:
+                # Use cost price as fallback
+                closing_price = row['Cost/Sh']
+            
+            # Calculate values
+            market_value, is_sold = self.calculator.calculate_holding_value(
+                row, closing_price, current_date
+            )
+            
+            broker = row['Broker']
+            
+            # Update metrics
+            if is_sold:
+                metrics['sales']['Overall'] += row['Net Sale']
+                metrics['sales'][broker] += row['Net Sale']
+            else:
+                metrics['values']['Overall'] += market_value
+                metrics['values'][broker] += market_value
+            
+            # Track purchases on DOP
+            if row['DOP'].date() == current_date:
+                metrics['purchases']['Overall'] += row['Net Cost']
+                metrics['purchases'][broker] += row['Net Cost']
+            
+            # Update drill-down
+            self._update_drill_down(
+                current_date, symbol, broker, row, closing_price, market_value
+            )
+            
+            holdings_processed += 1
+        
+        # Update sales/purchase tracking
+        self._update_sales_purchase_tracking(current_date, metrics)
+        
+        return holdings_processed > 0
+    
+    def _update_drill_down(
+        self, 
+        current_date: date, 
+        symbol: str, 
+        broker: str, 
+        row: pd.Series,
+        closing_price: float,
+        market_value: float
+    ):
+        """Update drill-down tracking"""
+        from Utils.drill_down_util import enter_track
+        
+        self.drill_down_df = enter_track(
+            self.drill_down_df,
+            current_date,
+            symbol,
+            broker,
+            row['File'],
+            row['No. '],
+            row['Cost/Sh'],
+            closing_price,
+            market_value
+        )
+    
+    def _update_sales_purchase_tracking(self, current_date: date, metrics: Dict):
+        """Update sales/purchase tracking for all brokers"""
+        for broker in self.calculator.brokers:
+            # Skip if no activity and no holdings
+            has_activity = (metrics['sales'][broker] != 0 or 
+                          metrics['purchases'][broker] != 0)
+            
+            if not has_activity and metrics['values'][broker] == 0:
+                continue
+            
+            # Get previous values
+            prev_data = self._get_previous_broker_data(broker)
+            
+            # Calculate NAV
+            units, nav = self.calculator.update_nav(
+                broker,
+                metrics['values'][broker],
+                metrics['purchases'][broker],
+                metrics['sales'][broker],
+                prev_data['units'],
+                prev_data['nav'],
+                prev_data['value']
+            )
+            
+            # Append new row
+            new_row = {
+                'Date': current_date,
+                'Value': metrics['values'][broker],
+                'Purchase': metrics['purchases'][broker],
+                'Sales': metrics['sales'][broker],
+                'Net Fund': metrics['purchases'][broker] - metrics['sales'][broker],
+                'Units': units,
+                'NAV': nav
+            }
+            
+            self.sales_purchase_dict[broker] = pd.concat([
+                self.sales_purchase_dict[broker],
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+    
+    def _get_previous_broker_data(self, broker: str) -> Dict[str, float]:
+        """Get previous day's data for a broker"""
+        if self.sales_purchase_dict[broker].empty:
+            return {'units': 0.0, 'nav': 1000.0, 'value': 0.0}
+        
+        last_row = self.sales_purchase_dict[broker].iloc[-1]
+        return {
+            'units': last_row['Units'],
+            'nav': last_row['NAV'],
+            'value': last_row['Value']
+        }
+    
+    def _save_results(self, df: pd.DataFrame):
+        """Save all results to disk"""
+        from Utils.sales_purchase_util import save_sales_purchase_dict
+        from Utils.drill_down_util import save_drill_down_df
+        
+        try:
+            # Save updated main file
+            with pd.ExcelWriter(
+                self.config.main_file_path, 
+                engine='openpyxl', 
+                mode='a', 
+                if_sheet_exists='replace'
+            ) as writer:
+                df.to_excel(writer, sheet_name=self.config.sheet_name, index=False)
+            
+            # Save tracking data
+            save_sales_purchase_dict(self.sales_purchase_dict)
+            save_drill_down_df(self.drill_down_df)
+            
+            logger.info("Results saved successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to save results: {e}")
+            raise
 
 
 class StockAnalysisApp:
+    """Main application UI"""
+    
     def __init__(self, root):
         self.root = root
         self.root.title("Stock Analysis Tool")
-        self.root.geometry("600x500")
-
-        # Variables
-        self.config_file = "defaults.json"
-        self.default_values = self.load_defaults()
-
-        # Initialize class variables
-        self.file_path = self.default_values.get("main_file_path", "")
-        self.sales_purchase_file_path = self.default_values.get("sales_purchase_file_path", "")
-        self.sheet_name = self.default_values.get("sheet_name", "")
-        self.start_date = None
-        self.end_date = None
-        self.df = None
-        self.sales_purchase_dict = None
-        self.drill_down_df = None
-        self.close_price_df = None
-        self.brokers = []
-
-        self.cfca_handler = CorporateActionsHandler("Excels")
-        self.volume_adjustments = {}
-
-        # Start the app with the file input screen
-        self.file_input_and_sheet_name_screen()
-
+        self.root.geometry("700x550")
+        
+        # Load configuration
+        self.config = AppConfig.load()
+        
+        # Initialize components
+        self.price_manager = None
+        self.processor = None
+        self.cfca_handler = None
+        
+        # Start UI
+        self.show_file_input_screen()
+    
     def clear_screen(self):
+        """Clear all widgets from screen"""
         for widget in self.root.winfo_children():
             widget.destroy()
-
-    def load_defaults(self):
-        if os.path.exists(self.config_file):
-            with open(self.config_file, "r") as file:
-                return json.load(file)
-        return {}
-
-    def save_defaults(self):
-        defaults = {
-            "main_file_path": self.file_path,
-            "sales_purchase_file_path": self.sales_purchase_file_path,
-            "sheet_name": self.sheet_name_var.get(),
-        }
-        with open(self.config_file, "w") as file:
-            json.dump(defaults, file)
-
-
-    def browse_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-        if file_path:
-            self.file_path = file_path
-            self.file_path_label.config(text=file_path)
-            self.save_defaults()
-
-    def browse_sales_purchase_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-        if file_path:
-            self.sales_purchase_file_path = file_path
-            self.sales_purchase_file_path_label.config(text=file_path)
-            self.save_defaults()
-
-    def clear_inputs(self):
-        self.file_path = ""
-        self.sales_purchase_file_path = ""
-        self.sheet_name_var.set("")
-        self.file_path_label.config(text="No file selected")
-        self.sales_purchase_file_path_label.config(text="No file selected")
-        self.save_defaults()  # Save empty values
-
-    def file_input_and_sheet_name_screen(self):
+    
+    def show_file_input_screen(self):
+        """Show file selection screen"""
         self.clear_screen()
-
-        # Input for main data file
-        ttk.Label(self.root, text="Select Main Excel File:").grid(row=0, column=0, pady=10, padx=10, sticky='w')
-        self.file_path_label = ttk.Label(self.root, text=self.file_path or "No file selected", width=40, anchor="w")
-        self.file_path_label.grid(row=0, column=1, pady=10, padx=10)
-        ttk.Button(self.root, text="Browse", command=self.browse_file).grid(row=0, column=2, pady=10, padx=10)
-
-        # Input for sales/purchase file (optional)
-        ttk.Label(self.root, text="Select Sales/Purchase File (Optional):").grid(row=1, column=0, pady=10, padx=10, sticky='w')
-        self.sales_purchase_file_path_label = ttk.Label(self.root, text=self.sales_purchase_file_path or "No file selected", width=40, anchor="w")
-        self.sales_purchase_file_path_label.grid(row=1, column=1, pady=10, padx=10)
-        ttk.Button(self.root, text="Browse", command=self.browse_sales_purchase_file).grid(row=1, column=2, pady=10, padx=10)
-
-        # Input for sheet name
-        ttk.Label(self.root, text="Enter Sheet Name:").grid(row=2, column=0, pady=10, padx=10, sticky='w')
-        self.sheet_name_var = tk.StringVar(value=self.sheet_name)
-        ttk.Entry(self.root, textvariable=self.sheet_name_var, width=30).grid(row=2, column=1, pady=10, padx=10)
-
-        # Buttons (Aligned to the right)
-        # Configure grid to ensure alignment
-        self.root.grid_columnconfigure(0, weight=1)  # Allows left side to expand
-        self.root.grid_columnconfigure(1, weight=1)  # Center area
-        self.root.grid_columnconfigure(2, weight=1)  # Rightmost area
-
-        # Buttons (Aligned to the right)
-        button_frame = ttk.Frame(self.root)
-        button_frame.grid(row=3, column=0, columnspan=3, pady=20, padx=10, sticky="e")
-
         
-        ttk.Button(button_frame, text="Next", command=self.date_input_screen).pack(side="right", padx=5)
-        ttk.Button(button_frame, text="Clear Selection", command=self.clear_inputs).pack(side="right")
-
-    def date_input_screen(self):
-        self.save_defaults()
-        self.sheet_name = self.sheet_name_var.get()
-        if not self.file_path:
-            messagebox.showerror("Error", "Please select the main Excel file.")
+        frame = ttk.Frame(self.root, padding="20")
+        frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Main file
+        ttk.Label(frame, text="Main Excel File:", font=('Arial', 10, 'bold')).grid(
+            row=0, column=0, pady=10, padx=10, sticky='w'
+        )
+        self.main_file_label = ttk.Label(
+            frame, 
+            text=self.config.main_file_path or "No file selected",
+            width=50,
+            relief="sunken"
+        )
+        self.main_file_label.grid(row=0, column=1, pady=10, padx=10)
+        ttk.Button(
+            frame, 
+            text="Browse", 
+            command=self.browse_main_file
+        ).grid(row=0, column=2, pady=10, padx=10)
+        
+        # Sales/Purchase file (optional)
+        ttk.Label(frame, text="Sales/Purchase File:", font=('Arial', 10)).grid(
+            row=1, column=0, pady=10, padx=10, sticky='w'
+        )
+        self.sp_file_label = ttk.Label(
+            frame,
+            text=self.config.sales_purchase_file_path or "No file selected",
+            width=50,
+            relief="sunken"
+        )
+        self.sp_file_label.grid(row=1, column=1, pady=10, padx=10)
+        ttk.Button(
+            frame,
+            text="Browse",
+            command=self.browse_sp_file
+        ).grid(row=1, column=2, pady=10, padx=10)
+        
+        # Sheet name
+        ttk.Label(frame, text="Sheet Name:", font=('Arial', 10, 'bold')).grid(
+            row=2, column=0, pady=10, padx=10, sticky='w'
+        )
+        self.sheet_name_var = tk.StringVar(value=self.config.sheet_name)
+        ttk.Entry(frame, textvariable=self.sheet_name_var, width=30).grid(
+            row=2, column=1, pady=10, padx=10, sticky='w'
+        )
+        
+        # Buttons
+        button_frame = ttk.Frame(frame)
+        button_frame.grid(row=3, column=0, columnspan=3, pady=20, sticky='e')
+        
+        ttk.Button(
+            button_frame,
+            text="Clear",
+            command=self.clear_config
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        ttk.Button(
+            button_frame,
+            text="Next",
+            command=self.show_date_input_screen
+        ).pack(side=tk.RIGHT, padx=5)
+    
+    def show_date_input_screen(self):
+        """Show date input screen"""
+        # Validate and save config
+        self.config.main_file_path = self.main_file_label.cget("text")
+        self.config.sales_purchase_file_path = self.sp_file_label.cget("text")
+        self.config.sheet_name = self.sheet_name_var.get()
+        
+        if not self.config.main_file_path or self.config.main_file_path == "No file selected":
+            messagebox.showerror("Error", "Please select the main Excel file")
             return
-
-        if not self.sheet_name:
-            messagebox.showerror("Error", "Please enter a sheet name.")
+        
+        if not self.config.sheet_name:
+            messagebox.showerror("Error", "Please enter a sheet name")
             return
-
-        # Load data and initialize dicts
-        valid_files = self.load_data()
-        if not valid_files:
+        
+        # Load data
+        if not self.load_data():
             return
-
+        
+        self.config.save()
         self.clear_screen()
-
-        # Input for dates
-        ttk.Label(self.root, text="Start Date (optional, yyyy-mm-dd):").pack(pady=10)
+        
+        frame = ttk.Frame(self.root, padding="20")
+        frame.pack(expand=True)
+        
+        # Start date
+        ttk.Label(
+            frame, 
+            text="Start Date (optional):", 
+            font=('Arial', 10)
+        ).pack(pady=10)
+        
         self.start_date_var = tk.StringVar()
-
-        # Pre-fill start date if sales purchase dict is not empty
-        if self.sales_purchase_dict and "Overall" in self.sales_purchase_dict and not self.sales_purchase_dict["Overall"].empty:
-            self.start_date_var.set(str(self.sales_purchase_dict["Overall"]["Date"].iloc[-1]))
-
-        ttk.Entry(self.root, textvariable=self.start_date_var, width=20).pack(pady=5)
-
-        ttk.Label(self.root, text="End Date (yyyy-mm-dd):").pack(pady=10)
+        
+        # Pre-fill if available
+        if (self.processor.sales_purchase_dict and 
+            "Overall" in self.processor.sales_purchase_dict and
+            not self.processor.sales_purchase_dict["Overall"].empty):
+            last_date = self.processor.sales_purchase_dict["Overall"]["Date"].iloc[-1]
+            self.start_date_var.set(str(last_date))
+        
+        ttk.Entry(frame, textvariable=self.start_date_var, width=25).pack(pady=5)
+        
+        # End date
+        ttk.Label(
+            frame,
+            text="End Date (required):",
+            font=('Arial', 10, 'bold')
+        ).pack(pady=10)
+        
         self.end_date_var = tk.StringVar()
-        ttk.Entry(self.root, textvariable=self.end_date_var, width=20).pack(pady=5)
-
-        # buttons
-        button_frame = tk.Frame(self.root)
+        ttk.Entry(frame, textvariable=self.end_date_var, width=25).pack(pady=5)
+        
+        # Buttons
+        button_frame = ttk.Frame(frame)
         button_frame.pack(pady=20)
-        ttk.Button(button_frame, text="Previous", command=self.file_input_and_sheet_name_screen).pack(side=tk.LEFT, padx=10)
-        ttk.Button(button_frame, text="Next", command=self.fetch_close_price_data_screen).pack(side=tk.LEFT)
-
-
-    def fetch_close_price_data_screen(self):
-        self.start_date = self.start_date_var.get()
-        self.end_date = self.end_date_var.get()
-
-        if not self.end_date:
-            messagebox.showerror("Error", "End date is required.")
-            return
-
-        # Validate and parse dates
+        
+        ttk.Button(
+            button_frame,
+            text="Previous",
+            command=self.show_file_input_screen
+        ).pack(side=tk.LEFT, padx=10)
+        
+        ttk.Button(
+            button_frame,
+            text="Start Processing",
+            command=self.start_processing
+        ).pack(side=tk.LEFT, padx=10)
+    
+    def browse_main_file(self):
+        """Browse for main Excel file"""
+        file_path = filedialog.askopenfilename(
+            title="Select Main Excel File",
+            filetypes=[("Excel files", "*.xlsx *.xls")]
+        )
+        if file_path:
+            self.main_file_label.config(text=file_path)
+    
+    def browse_sp_file(self):
+        """Browse for sales/purchase file"""
+        file_path = filedialog.askopenfilename(
+            title="Select Sales/Purchase File",
+            filetypes=[("Excel files", "*.xlsx *.xls")]
+        )
+        if file_path:
+            self.sp_file_label.config(text=file_path)
+    
+    def clear_config(self):
+        """Clear all configuration"""
+        self.config = AppConfig()
+        self.config.save()
+        self.show_file_input_screen()
+    
+    def load_data(self) -> bool:
+        """Load and initialize data"""
         try:
-            self.start_date = parse(self.start_date).date() if self.start_date else None
-            self.end_date = parse(self.end_date).date()
+            from Utils.corporate_actions_handler import CorporateActionsHandler
+            
+            # Load main dataframe
+            df = DataLoader.load_main_dataframe(
+                self.config.main_file_path,
+                self.config.sheet_name
+            )
+            
+            # Get brokers
+            brokers = DataLoader.get_unique_brokers(df)
+            logger.info(f"Loaded cfca brokers")
+            # Initialize corporate actions handler
+            self.cfca_handler = CorporateActionsHandler("Excels")
+            logger.info(f"Loaded cfca handler")
+
+            
+            # Initialize processor (will initialize dicts)
+            self.processor = PortfolioProcessor(
+                df=df,
+                config=self.config,
+                brokers=brokers,
+                price_manager=None,  # Will be set later
+                cfca_handler=self.cfca_handler
+            )
+            logger.info(f"Loaded processor handler")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}")
+            messagebox.showerror("Error", f"Failed to load data:\n{str(e)}")
+            return False
+    
+    def start_processing(self):
+        """Start the processing workflow"""
+        # Parse dates
+        try:
+            start_date_str = self.start_date_var.get()
+            end_date_str = self.end_date_var.get()
+            
+            if not end_date_str:
+                messagebox.showerror("Error", "End date is required")
+                return
+            
+            self.config.start_date = parse(start_date_str).date() if start_date_str else None
+            self.config.end_date = parse(end_date_str).date()
+            
         except Exception as e:
             messagebox.showerror("Error", f"Invalid date format: {e}")
             return
-
-        self.run()
-
-    def browse_file(self):
-        self.file_path = filedialog.askopenfilename(
-            title="Select Main Excel File", filetypes=[("Excel files", "*.xlsx *.xls")]
-        )
-        if self.file_path:
-            self.file_path_label.config(text=self.file_path)
-
-
-    def load_data(self):
+        
+        # Start threaded processing
+        threading.Thread(target=self.run_processing, daemon=True).start()
+    
+    def run_processing(self):
+        """Run the complete processing pipeline"""
         try:
-            self.df = pd.read_excel(self.file_path, self.sheet_name, engine='openpyxl')
-            self.df = self.df[(self.df["Cat"].str.lower() == 'normal') | (self.df["Cat"].str.lower() == 'others')]
-            self.df["NSE Name "] = self.df.groupby("Name of Shares")["NSE Name "].transform(
-                lambda x: x.fillna(method='ffill').fillna(method='bfill')
+            # Show loading popup
+            self.show_loading_popup("Fetching price data...")
+            
+            # Initialize price manager
+            self.price_manager = PriceDataManager(
+                self.config.start_date or self.config.end_date,
+                self.config.end_date
             )
-            self.df["Broker"].fillna(value="unknown", inplace=True)
-            self.df["Broker"] = self.df["Broker"].str.replace(r"(?i)\bone\b", "IIFL", regex=True)
-            self.brokers = self.df["Broker"].unique()
-            print(self.brokers)
-            self.sales_purchase_dict = init_dict(
-                file_path=self.sales_purchase_file_path, 
-                broker_names=self.brokers
-            )
-            self.drill_down_df = init_drill_down_df()
-            return True
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load data: {e}")
-            return False
-
-    def fetch_close_price_data(self):
-        try:
-            # Show popup
-            self.show_loading_popup()
-
-            # Fetching process
-            self.df['S. Date'] = pd.to_datetime(self.df['S. Date'], errors='coerce').dt.date
-            filtered_df = self.df[(self.df['S. Date'].isnull()) | (self.df['S. Date'] > self.start_date)] if self.start_date else self.df
-
-            unique_df = filtered_df[['NSE Name ', 'Symbol', 'Name of Shares']].drop_duplicates()
-            unique_df['ticker'] = unique_df.apply(
-                lambda row: f"{row['NSE Name ']}.NS" if row['Symbol'] == "NSE" else f"{row['NSE Name ']}.BO",
-                axis=1
-            )
-            unique_df['bhav_keys'] = unique_df.apply(
-                lambda row: f"{row['NSE Name ']}.NS" if row['Symbol'] == "NSE" else f"{row['Name of Shares']}.BO",
-                axis=1
-            )
-
-            keys = list(set(unique_df['ticker']))
-            symbols_dict = map_symbols(keys, start_date=str(self.start_date), end_date=str(self.end_date))
-            self.close_price_df = create_stock_price_df(
-                start_date=str(self.start_date), 
-                end_date=str(self.end_date), 
-                keys=keys, 
-                symbols_dict=symbols_dict
-            )
-            self.close_price_df.to_csv("close_prices_dataframe.csv", index=False)
-            # Close popup after completion
+            
+            # Prepare tickers
+            tickers, _ = self.price_manager.prepare_ticker_mapping(self.processor.df)
+            
+            # Fetch prices
+            self.price_manager.fetch_prices(tickers)
+            
+            # Close loading popup
             self.loading_popup.destroy()
-            self.process_data()
-
+            
+            # Update processor with price manager
+            self.processor.price_manager = self.price_manager
+            
+            # Show progress window
+            self.show_progress_window()
+            
+            # Process data
+            success = self.processor.process(
+                progress_callback=self.update_progress
+            )
+            
+            # Close progress window
+            self.progress_window.destroy()
+            
+            if success:
+                messagebox.showinfo("Success", "Processing completed successfully!")
+                self.root.after(2000, self.terminate_app)
+            else:
+                messagebox.showerror("Error", "Processing failed. Check logs.")
+                
         except Exception as e:
-            self.loading_popup.destroy()
-            messagebox.showerror("Error", f"Failed to fetch close price data: {e}")
-
-    # Function to create the loading popup
-    def show_loading_popup(self):
+            logger.error(f"Processing error: {e}", exc_info=True)
+            if hasattr(self, 'loading_popup'):
+                self.loading_popup.destroy()
+            if hasattr(self, 'progress_window'):
+                self.progress_window.destroy()
+            messagebox.showerror("Error", f"Processing failed:\n{str(e)}")
+    
+    def show_loading_popup(self, message: str):
+        """Show loading popup"""
         self.loading_popup = tk.Toplevel(self.root)
         self.loading_popup.title("Loading")
-        self.loading_popup.geometry("250x100")
+        self.loading_popup.geometry("300x100")
         self.loading_popup.resizable(False, False)
-        tk.Label(self.loading_popup, text="Downloading...", font=("Arial", 12)).pack(pady=20)
-        self.loading_popup.grab_set()  # Keeps it on top
+        
+        tk.Label(
+            self.loading_popup,
+            text=message,
+            font=("Arial", 11)
+        ).pack(pady=30)
+        
+        self.loading_popup.grab_set()
         self.root.update_idletasks()
-
-    # Function to run `fetch_close_price_data` in a separate thread
-    def fetch_data_threaded(self):
-        threading.Thread(target=self.fetch_close_price_data, daemon=True).start()
     
-    def process_data(self):
-        # Progress window setup
-        progress_window = tk.Toplevel(self.root)
-        progress_window.title("Processing Data")
-        progress_window.geometry("300x100")
-        ttk.Label(progress_window, text="Processing data...").pack(pady=10)
-        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=200, mode="determinate")
-        progress_bar.pack(pady=10)
+    def show_progress_window(self):
+        """Show progress window"""
+        self.progress_window = tk.Toplevel(self.root)
+        self.progress_window.title("Processing")
+        self.progress_window.geometry("400x120")
+        self.progress_window.resizable(False, False)
         
-
-        total_days = (self.end_date - self.start_date).days + 1
-        progress_bar["maximum"] = total_days
-
-
-        def process():
-            update_frequency = 5  # Update progress bar every 10 days
-            days_processed = 0
-            current_date = self.start_date
-            temp_df = self.df.copy()
-            original_volume = temp_df['No. '].copy()
-
-            # adjusting volume back to current date state
-            temp_df = self.cfca_handler.reverse_actions(df=temp_df, start_date=str(current_date))
-
-            unlisted_shares = {}
-            
-            while current_date <= self.end_date:
-                temp_df = self.cfca_handler.apply_tday_actions(temp_df, current_date=str(current_date))
-                days_processed += 1
-                is_sp_handled = False
-                if days_processed % update_frequency == 0 or current_date == self.end_date:
-                    progress_bar["value"] = days_processed
-                    progress_window.update_idletasks()
-                total_market_value = 0
-                brokers_n_overall = ["Overall"] + list(self.brokers)
-
-                values = {broker: 0 for broker in brokers_n_overall}
-                sales = {broker: 0 for broker in brokers_n_overall}
-                purchase = {broker: 0 for broker in brokers_n_overall}
-                net_fund = {broker: 0 for broker in brokers_n_overall}
-                units = {broker: 0 for broker in brokers_n_overall}
-                nav = {broker: 0 for broker in brokers_n_overall}
-
-                for index, row in temp_df.iterrows():
-                    symbol = row['NSE Name ']
-                    dop = pd.to_datetime(row['DOP'])
-                    sell_date = pd.to_datetime(row['S. Date']) if pd.notnull(row['S. Date']) else None
-                    
-                    if pd.notnull(symbol) and (dop <= pd.to_datetime(current_date)) and (sell_date is None or pd.to_datetime(current_date) <= sell_date):
-                        symbol_ns = symbol + (".NS" if row['Symbol'] == "NSE" else ".BO")
-
-                        try:
-                            if symbol_ns in self.close_price_df['ticker'].values:
-                                date_column = current_date.strftime("%Y-%m-%d")
-
-                                if date_column in self.close_price_df.columns:
-                                    close_price = self.close_price_df.loc[self.close_price_df['ticker'] == symbol_ns, date_column].values[0]
-
-                                    if pd.isna(close_price) or pd.isnull(close_price):
-                                        close_price = row['Cost/Sh']
-                                else:
-                                    raise ValueError(f"Date {date_column} not found in the data.")
-                            else:
-                                close_price = None
-                        except Exception as e:
-                            print(f"Error fetching data for {symbol_ns} on {current_date}: {e}")
-                            date = pd.to_datetime(current_date)
-                            if (date.dayofweek == 5) or (date.dayofweek == 6):
-                                print("weekend day", current_date)
-
-                            if len(self.sales_purchase_dict["Overall"]) <= 0:
-                                break
-                            for key, sp_df in self.sales_purchase_dict.items():
-                                # Ensure date column is in datetime format
-                                if (len(sp_df) <= 0):
-                                    continue
-                                sp_df["Date"] = pd.to_datetime(sp_df["Date"])
-
-                                # Get the row with the latest date
-                                latest_row = sp_df.loc[sp_df["Date"].idxmax()]
-
-                                # Update the date in the latest row copy
-                                new_row = latest_row.copy()
-                                new_row["Date"] = pd.to_datetime(current_date)
-                                new_row["Sales"] = np.nan
-                                new_row["Purchase"] = np.nan
-                                new_row["Net Fund"] = np.nan
-
-                                # Append the updated row to the DataFrame
-                                self.sales_purchase_dict[key] = sp_df._append(new_row, ignore_index=True)
-                            is_sp_handled = True
-                            break
-
-                        if close_price and (not pd.isna(close_price)):
-                            closing_price = float(close_price)
-                            temp_df.at[index, 'CMP'] = closing_price
-                            temp_df.at[index, 'MV'] = closing_price * row['No. ']
-                            total_market_value += temp_df.at[index, 'MV']
-
-                            prev_value = values[row['Broker']]
-
-                            if sell_date != pd.to_datetime(current_date):
-                                values["Overall"] += closing_price * row['No. ']
-                                values[row['Broker']] += closing_price * row['No. ']
-                                if dop == pd.to_datetime(current_date):
-                                    purchase["Overall"] += row["Net Cost"]
-                                    purchase[row['Broker']] += row["Net Cost"]
-                            else:
-                                sales["Overall"] += row['Net Sale']
-                                sales[row['Broker']] += row['Net Sale']
-                            
-                            current_mv = values[row['Broker']]
-                            self.drill_down_df = enter_track(self.drill_down_df, current_date, symbol, row['Broker'], row['File'], row['No. '], row['Cost/Sh'], closing_price, current_mv - prev_value)
-                        else:
-                            print(f"No data found for {symbol_ns} on {current_date}")
-
-                for broker in values:
-                    # todo: sell handle even for value 0
-                    isPurchaseOrSellHappened = (sales[broker]!=0 or purchase[broker]!=0)
-                    if isPurchaseOrSellHappened or (not ((not values[broker]) or  values[broker] == 0)):
-                        net_fund[broker] = purchase[broker] - sales[broker]
-                        prev_unit = self.sales_purchase_dict[broker].iloc[-1].Units if not self.sales_purchase_dict[broker].empty else values[broker] / 1000
-                        prev_nav = self.sales_purchase_dict[broker].iloc[-1].NAV if not self.sales_purchase_dict[broker].empty else 1000
-                        prev_value = self.sales_purchase_dict[broker].iloc[-1].Value if not self.sales_purchase_dict[broker].empty else 0
-                        
-                        if(prev_nav == 0):
-                            print("prev_value: ", prev_value)
-                            prev_nav = 1000
-                        
-                        units[broker] = (prev_unit + (net_fund[broker] / prev_nav)) if (int(prev_value)!=0) else values[broker] / prev_nav
-                        nav[broker] = values[broker] / units[broker] if units[broker]!=0 else 0
-                        if(values[broker]==0):
-                            units[broker] = 0
-                            nav[broker] = 0
-                    # todo: sell handle even for value 0
-                    date = pd.to_datetime(current_date)
-                    if (not isPurchaseOrSellHappened) and values[broker] == 0 and (is_sp_handled):
-                        continue
-
-                    self.sales_purchase_dict[broker].loc[len(self.sales_purchase_dict[broker])] = [current_date, values[broker], purchase[broker], sales[broker], net_fund[broker], units[broker], nav[broker]]
-
-                current_date += timedelta(days=1)
-            
-            progress_window.destroy()
-
-            temp_df["No. "] = original_volume
-            with pd.ExcelWriter(self.file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-                temp_df.to_excel(writer, sheet_name=self.sheet_name, index=False)
-            
-            if self.root is not None and self.root:
-                self.on_close()
-
-            save_sales_purchase_dict(self.sales_purchase_dict)
-            save_drill_down_df(self.drill_down_df)
-
-        threading.Thread(target=process).start()
-
-    def on_close(self):
-        self.clear_screen()
-        messagebox.showinfo("Success", "Process completed successfully!")
-        self.root.after(5000, self.terminate_process)
+        ttk.Label(
+            self.progress_window,
+            text="Processing portfolio data...",
+            font=("Arial", 11)
+        ).pack(pady=15)
         
-    def terminate_process(self):
-        # Terminate the entire Python process
+        self.progress_bar = ttk.Progressbar(
+            self.progress_window,
+            orient="horizontal",
+            length=350,
+            mode="determinate"
+        )
+        self.progress_bar.pack(pady=10)
+        
+        self.progress_label = ttk.Label(
+            self.progress_window,
+            text="0%",
+            font=("Arial", 9)
+        )
+        self.progress_label.pack()
+        
+        self.progress_window.grab_set()
+    
+    def update_progress(self, current: int, total: int):
+        """Update progress bar"""
+        if hasattr(self, 'progress_bar'):
+            percentage = int((current / total) * 100)
+            self.progress_bar["maximum"] = total
+            self.progress_bar["value"] = current
+            self.progress_label.config(text=f"{percentage}% ({current}/{total} days)")
+            self.progress_window.update_idletasks()
+    
+    def terminate_app(self):
+        """Terminate the application"""
+        self.root.destroy()
         sys.exit(0)
 
-    def run(self):
-        self.fetch_data_threaded()
-        
-        # Further processing would go here
 
-
-# Run the app
-if __name__ == "__main__":
+def main():
+    """Application entry point"""
     root = tk.Tk()
     app = StockAnalysisApp(root)
     root.mainloop()
 
 
+if __name__ == "__main__":
+    main()

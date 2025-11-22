@@ -23,6 +23,7 @@ class CorporateActionsHandler:
         """Load and process CFCA data"""
         from Utils.split_n_merge_handler import is_face_value_action, extract_face_values, get_latest_CFCA_file
         cfca_path = get_latest_CFCA_file(cfca_dir)
+    
         cfca_df = pd.read_csv(cfca_path)
         
         # Filter for face value actions only
