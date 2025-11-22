@@ -132,7 +132,7 @@ class PriceDataManager:
     def fetch_prices(self, tickers: List[str]) -> pd.DataFrame:
         """Fetch price data for given tickers"""
         from Utils.symbol_change_handler import map_symbols
-        from down_close_price_data import create_stock_price_df
+        from Utils.down_close_price_data import create_stock_price_df
         
         logger.info(f"Fetching prices for {len(tickers)} tickers")
         
