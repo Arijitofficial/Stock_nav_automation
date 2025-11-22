@@ -111,6 +111,7 @@ class PriceDataManager:
         self.start_date = start_date
         self.end_date = end_date
         self.price_df = None
+        self._market_closed_cache = {}
     
     def prepare_ticker_mapping(self, df: pd.DataFrame) -> Tuple[List[str], pd.DataFrame]:
         """Prepare ticker symbols and mapping dataframe"""
@@ -155,6 +156,47 @@ class PriceDataManager:
         
         return self.price_df
     
+    def is_market_closed(self, date_str: str) -> bool:
+        """
+        Check if market was closed on a given date by checking if the date column exists
+        and if any prices exist for that date.
+        
+        Args:
+            date_str: Date in 'YYYY-MM-DD' format
+            
+        Returns:
+            True if market was closed (no data for that date), False otherwise
+        """
+        # Check cache first
+        if date_str in self._market_closed_cache:
+            return self._market_closed_cache[date_str]
+        
+        if self.price_df is None:
+            logger.warning("Price dataframe not initialized - but is_market_closed() invoked")
+            return False
+        
+        try:
+            # Check if date column exists in the dataframe
+            if date_str not in self.price_df.columns:
+                self._market_closed_cache[date_str] = True
+                return True
+            
+            # Check if there are any non-null prices for this date
+            date_column = self.price_df[date_str]
+            has_any_price = date_column.notna().any()
+            
+            market_closed = not has_any_price
+            self._market_closed_cache[date_str] = market_closed
+            
+            if market_closed:
+                logger.debug(f"Market closed on {date_str}")
+            
+            return market_closed
+            
+        except Exception as e:
+            logger.warning(f"Error checking market status for {date_str}: {e}")
+            return False
+        
     def get_price(self, symbol: str, date_str: str) -> Optional[float]:
         """Get closing price for a symbol on a specific date"""
         if self.price_df is None:
@@ -326,6 +368,15 @@ class PortfolioProcessor:
     
     def _process_single_day(self, df: pd.DataFrame, current_date: date) -> bool:
         """Process portfolio for a single day"""
+        
+        date_str = current_date.strftime("%Y-%m-%d")
+        
+        # Check if market is closed using the price manager
+        if self.price_manager.is_market_closed(date_str):
+            # Repeat previous day's data if it exists
+            self._repeat_previous_day_data(current_date)
+            return True  # Consider it successfully processed
+        
         metrics = self.calculator.initialize_metrics()
         holdings_processed = 0
         
@@ -345,12 +396,11 @@ class PortfolioProcessor:
                 continue
             
             symbol_ns = symbol + (".NS" if row['Symbol'] == "NSE" else ".BO")
-            date_str = current_date.strftime("%Y-%m-%d")
             
             closing_price = self.price_manager.get_price(symbol_ns, date_str)
             
             if closing_price is None:
-                # Use cost price as fallback
+                # Use cost price as fallback for individual missing prices
                 closing_price = row['Cost/Sh']
             
             # Calculate values
@@ -384,7 +434,34 @@ class PortfolioProcessor:
         self._update_sales_purchase_tracking(current_date, metrics)
         
         return holdings_processed > 0
-    
+
+    def _repeat_previous_day_data(self, current_date: date):
+        """Repeat previous day's sales/purchase data for all brokers"""
+        for broker in self.calculator.brokers:
+            prev_data = self._get_previous_broker_data(broker)
+            
+            # Skip if no previous data exists
+            if self.sales_purchase_dict[broker].empty:
+                continue
+            
+            # Create new row with same values as previous day but current date
+            new_row = {
+                'Date': current_date,
+                'Value': prev_data['value'],
+                'Purchase': np.nan,  # No new purchases on market holiday
+                'Sales': np.nan,     # No new sales on market holiday
+                'Net Fund': np.nan,
+                'Units': prev_data['units'],
+                'NAV': prev_data['nav']
+            }
+            
+            self.sales_purchase_dict[broker] = pd.concat([
+                self.sales_purchase_dict[broker],
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+        
+        logger.info(f"Repeated previous day's data for {current_date} (market closed)")
+
     def _update_drill_down(
         self, 
         current_date: date, 
