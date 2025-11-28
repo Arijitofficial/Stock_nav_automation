@@ -302,6 +302,7 @@ class PortfolioProcessor:
         # Initialize data structures
         self.sales_purchase_dict = self._init_sales_purchase_dict()
         self.drill_down_df = self._init_drill_down_df()
+        self.sell_purchase_track_df = self._init_sell_purchase_track_df()
     
     def _init_sales_purchase_dict(self) -> Dict[str, pd.DataFrame]:
         """Initialize sales/purchase tracking dictionary"""
@@ -310,6 +311,11 @@ class PortfolioProcessor:
             file_path=self.config.sales_purchase_file_path,
             broker_names=self.brokers
         )
+    
+    def _init_sell_purchase_track_df(self) -> pd.DataFrame:
+        """Initialize sell-purchase track dataframe"""
+        from Utils.sell_purchase_track_util import init_sell_purchase_track_df
+        return init_sell_purchase_track_df()
     
     def _init_drill_down_df(self) -> pd.DataFrame:
         """Initialize drill-down dataframe"""
@@ -414,6 +420,9 @@ class PortfolioProcessor:
             if is_sold:
                 metrics['sales']['Overall'] += row['Net Sale']
                 metrics['sales'][broker] += row['Net Sale']
+                # create sell entry on current date
+                if pd.notna(row['S. Date']) and row['S. Date'] == current_date_dt:
+                    self._track_sell_transaction(row, current_date, closing_price)
             else:
                 metrics['values']['Overall'] += market_value
                 metrics['values'][broker] += market_value
@@ -422,6 +431,7 @@ class PortfolioProcessor:
             if row['DOP'].date() == current_date:
                 metrics['purchases']['Overall'] += row['Net Cost']
                 metrics['purchases'][broker] += row['Net Cost']
+                self._track_purchase_transaction(row, current_date)
             
             # Update drill-down
             self._update_drill_down(
@@ -461,6 +471,37 @@ class PortfolioProcessor:
             ], ignore_index=True)
         
         logger.info(f"Repeated previous day's data for {current_date} (market closed)")
+
+    
+    def _track_purchase_transaction(self, row: pd.Series, purchase_date):
+        """Track a purchase transaction"""
+        from Utils.sell_purchase_track_util import enter_purchase_track
+        
+        self.sell_purchase_track_df = enter_purchase_track(
+            sell_purchase_track_df=self.sell_purchase_track_df,
+            purchase_date=purchase_date,
+            broker=row['Broker'],
+            file=row['File'],
+            stock_symbol=row['NSE Name '],
+            purchase_price=row['Cost/Sh'],
+            quantity=row['No. ']
+        )
+
+
+    def _track_sell_transaction(self, row: pd.Series, sell_date, sell_price: float):
+        """Track a sell transaction"""
+        from Utils.sell_purchase_track_util import enter_sell_track
+        
+        self.sell_purchase_track_df = enter_sell_track(
+            sell_purchase_track_df=self.sell_purchase_track_df,
+            purchase_date=row['DOP'].date(),
+            sell_date=sell_date,
+            broker=row['Broker'],
+            file=row['File'],
+            stock_symbol=row['NSE Name '],
+            sell_price=sell_price,
+            quantity=row['No. ']
+        )
 
     def _update_drill_down(
         self, 
@@ -542,6 +583,7 @@ class PortfolioProcessor:
         """Save all results to disk"""
         from Utils.sales_purchase_util import save_sales_purchase_dict
         from Utils.drill_down_util import save_drill_down_df
+        from Utils.sell_purchase_track_util import save_sell_purchase_track_df
         
         try:
             # Save updated main file
@@ -556,6 +598,7 @@ class PortfolioProcessor:
             # Save tracking data
             save_sales_purchase_dict(self.sales_purchase_dict)
             save_drill_down_df(self.drill_down_df)
+            save_sell_purchase_track_df(self.sell_purchase_track_df)
             
             logger.info("Results saved successfully")
             
@@ -563,7 +606,7 @@ class PortfolioProcessor:
             logger.error(f"Failed to save results: {e}")
             raise
 
-
+    
 class StockAnalysisApp:
     """Main application UI"""
     
