@@ -274,7 +274,7 @@ class DrillDownPivotApp:
             messagebox.showinfo("No Data", "No data found for the selected criteria")
     
     def calculate_pivot_table(self, broker, start_date, end_date):
-        """Calculate pivot table data"""
+        """Calculate pivot table data with aggregation across files"""
         # Filter drill down data for the broker
         broker_df = self.drill_down_df[self.drill_down_df['broker'] == broker].copy()
         
@@ -289,22 +289,30 @@ class DrillDownPivotApp:
         for stock in stocks:
             stock_df = broker_df[broker_df['share name'] == stock]
             
-            # Data at start date (closest date <= start_date)
+            # Aggregate data at start date (closest date <= start_date) across all files
             start_data = stock_df[stock_df['date'] <= start_date]
             if not start_data.empty:
-                start_data = start_data.sort_values('date').iloc[-1]
-                qty_start = start_data['quantity']
-                value_start = start_data['total market value']
+                # Get the latest date at or before start_date
+                latest_start_date = start_data['date'].max()
+                start_data_on_date = start_data[start_data['date'] == latest_start_date]
+                
+                # Aggregate across all files for this stock on this date
+                qty_start = start_data_on_date['quantity'].sum()
+                value_start = start_data_on_date['total market value'].sum()
             else:
                 qty_start = 0
                 value_start = 0
             
-            # Data at end date (closest date <= end_date)
+            # Aggregate data at end date (closest date <= end_date) across all files
             end_data = stock_df[stock_df['date'] <= end_date]
             if not end_data.empty:
-                end_data = end_data.sort_values('date').iloc[-1]
-                qty_end = end_data['quantity']
-                value_end = end_data['total market value']
+                # Get the latest date at or before end_date
+                latest_end_date = end_data['date'].max()
+                end_data_on_date = end_data[end_data['date'] == latest_end_date]
+                
+                # Aggregate across all files for this stock on this date
+                qty_end = end_data_on_date['quantity'].sum()
+                value_end = end_data_on_date['total market value'].sum()
             else:
                 qty_end = 0
                 value_end = 0
@@ -319,7 +327,7 @@ class DrillDownPivotApp:
                     (self.sell_purchase_df['Broker'] == broker)
                 ]
                 
-                # Purchases in range
+                # Purchases in range - aggregate across all files
                 purchases = stock_transactions[
                     (stock_transactions['Purchase Date'] >= start_date) &
                     (stock_transactions['Purchase Date'] <= end_date) &
@@ -327,7 +335,7 @@ class DrillDownPivotApp:
                 ]
                 purchase_value = (purchases['Purchase Price'] * purchases['Quantity']).sum()
                 
-                # Sells in range
+                # Sells in range - aggregate across all files
                 sells = stock_transactions[
                     (stock_transactions['Sell Date'] >= start_date) &
                     (stock_transactions['Sell Date'] <= end_date) &
