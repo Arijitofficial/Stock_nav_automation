@@ -4,6 +4,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 from tkcalendar import DateEntry
+from dateutil.relativedelta import relativedelta
 
 
 class PivotAnalysisApp:
@@ -17,6 +18,7 @@ class PivotAnalysisApp:
         self.sell_purchase_df = None
         self.current_pivot_data = {}
         self.all_brokers = []
+        self.duration_dates = {}
         
         # Load data
         self.load_data()
@@ -57,7 +59,7 @@ class PivotAnalysisApp:
         main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Left panel for controls
-        left_panel = ttk.Frame(main_container, width=300)
+        left_panel = ttk.Frame(main_container, width=350)
         main_container.add(left_panel, weight=0)
         
         # Right panel for table display
@@ -88,25 +90,52 @@ class PivotAnalysisApp:
             date_pattern='yyyy-MM-dd'
         )
         self.end_date_entry.pack(pady=5)
+        self.end_date_entry.bind('<<DateEntrySelected>>', self.on_end_date_change)
         
-        # Broker and Duration Selection Frame
-        selection_frame = ttk.LabelFrame(parent, text="Select Broker & Duration", padding=10)
-        selection_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Duration Selection Frame
+        duration_frame = ttk.LabelFrame(parent, text="Duration Start Dates", padding=10)
+        duration_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # Tree view for broker and duration
-        self.tree = ttk.Treeview(selection_frame, selectmode='browse', height=15)
+        self.duration_widgets = {}
+        durations = [('1M', 1), ('3M', 3), ('6M', 6), ('9M', 9), ('12M', 12)]
+        
+        for duration_code, months in durations:
+            row_frame = ttk.Frame(duration_frame)
+            row_frame.pack(fill=tk.X, pady=3)
+            
+            ttk.Label(row_frame, text=duration_code, width=5).pack(side=tk.LEFT, padx=5)
+            
+            date_entry = ttk.Entry(row_frame, width=12)
+            date_entry.pack(side=tk.LEFT, padx=5)
+            
+            available_label = ttk.Label(row_frame, text="", foreground='blue')
+            available_label.pack(side=tk.LEFT, padx=5)
+            
+            self.duration_widgets[duration_code] = {
+                'months': months,
+                'entry': date_entry,
+                'label': available_label
+            }
+        
+        # Broker Selection Frame
+        broker_frame = ttk.LabelFrame(parent, text="Select Broker", padding=10)
+        broker_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Tree view for broker selection
+        self.tree = ttk.Treeview(broker_frame, selectmode='browse', height=10)
         self.tree.pack(fill=tk.BOTH, expand=True)
         
         # Scrollbar for tree
-        tree_scroll = ttk.Scrollbar(selection_frame, orient="vertical", command=self.tree.yview)
+        tree_scroll = ttk.Scrollbar(broker_frame, orient="vertical", command=self.tree.yview)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.configure(yscrollcommand=tree_scroll.set)
         
-        # Populate tree
-        self.populate_tree()
+        # Populate tree with brokers only
+        for broker in self.all_brokers:
+            self.tree.insert('', 'end', text=broker, values=(broker,))
         
         # Bind selection event
-        self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)
+        self.tree.bind('<<TreeviewSelect>>', self.on_broker_select)
         
         # Buttons Frame
         button_frame = ttk.Frame(parent)
@@ -114,20 +143,20 @@ class PivotAnalysisApp:
         
         ttk.Button(
             button_frame,
-            text="Generate Pivot",
-            command=self.generate_pivot
+            text="Generate Tables for Broker",
+            command=self.generate_all_pivots
         ).pack(fill=tk.X, pady=2)
         
         ttk.Button(
             button_frame,
-            text="Download Current Table",
-            command=self.download_current_table
+            text="Download Selected Broker",
+            command=self.download_selected_broker
         ).pack(fill=tk.X, pady=2)
         
         ttk.Button(
             button_frame,
-            text="Download All Pivot Tables",
-            command=self.download_all_pivot_tables
+            text="Download All Brokers",
+            command=self.download_all_brokers
         ).pack(fill=tk.X, pady=2)
         
         ttk.Button(
@@ -136,37 +165,91 @@ class PivotAnalysisApp:
             command=self.generate_drill_down_csv
         ).pack(fill=tk.X, pady=2)
     
-    def populate_tree(self):
-        """Populate the tree with brokers and durations"""
-        durations = [
-            ('1M', '1 Month'),
-            ('3M', '3 Months'),
-            ('6M', '6 Months'),
-            ('9M', '9 Months'),
-            ('12M', '12 Months')
-        ]
-        
-        for broker in self.all_brokers:
-            broker_node = self.tree.insert('', 'end', text=broker, values=(broker, ''))
+    def on_end_date_change(self, event=None):
+        """Handle end date change and calculate duration start dates"""
+        try:
+            end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
             
-            for duration_code, duration_name in durations:
-                self.tree.insert(
-                    broker_node, 
-                    'end', 
-                    text=duration_name,
-                    values=(broker, duration_code)
-                )
+            for duration_code, widget_info in self.duration_widgets.items():
+                months = widget_info['months']
+                
+                # Calculate target start date (same day, N months earlier)
+                target_start_date = end_date - relativedelta(months=months)
+                
+                # Find closest available date
+                available_date = self.find_closest_date(target_start_date)
+                
+                if available_date:
+                    # Set the entry field
+                    widget_info['entry'].delete(0, tk.END)
+                    widget_info['entry'].insert(0, available_date.strftime('%Y-%m-%d'))
+                    
+                    # Show available date in label
+                    widget_info['label'].config(
+                        text=f"(Available: {available_date.strftime('%Y-%m-%d')})"
+                    )
+                else:
+                    widget_info['entry'].delete(0, tk.END)
+                    widget_info['entry'].insert(0, target_start_date.strftime('%Y-%m-%d'))
+                    widget_info['label'].config(text="(No data)")
+                    
+        except Exception as e:
+            messagebox.showerror("Error", f"Error calculating dates: {str(e)}")
+    
+    def find_closest_date(self, target_date):
+        """Find the closest available date in the drill_down data"""
+        available_dates = self.drill_down_df['date'].unique()
+        available_dates = pd.to_datetime(available_dates)
+        available_dates = sorted(available_dates)
+        
+        # Find the closest date that is <= target_date
+        valid_dates = [d for d in available_dates if d <= target_date]
+        
+        if valid_dates:
+            return max(valid_dates)
+        
+        return None
+    
+    def on_broker_select(self, event):
+        """Handle broker selection"""
+        selection = self.tree.selection()
+        if not selection:
+            return
+        
+        item = self.tree.item(selection[0])
+        values = item['values']
+        
+        if values:
+            self.current_broker = values[0]
     
     def create_table_panel(self, parent):
         """Create the right panel for table display"""
         # Title
         self.table_title = ttk.Label(
             parent, 
-            text="Select a broker and duration to view pivot table",
+            text="Generate pivots to view data",
             font=('Arial', 12, 'bold')
         )
         self.table_title.pack(pady=10)
         
+        # Notebook for tabs
+        self.notebook = ttk.Notebook(parent)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Create tabs for each duration
+        self.table_frames = {}
+        durations = ['1M', '3M', '6M', '9M', '12M']
+        
+        for duration in durations:
+            tab_frame = ttk.Frame(self.notebook)
+            self.notebook.add(tab_frame, text=duration)
+            
+            # Create table in this tab
+            table_tree = self.create_duration_table(tab_frame)
+            self.table_frames[duration] = table_tree
+    
+    def create_duration_table(self, parent):
+        """Create a table for a specific duration"""
         # Table frame
         table_frame = ttk.Frame(parent)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -180,10 +263,11 @@ class PivotAnalysisApp:
             'Value (End)',
             'Purchase Value',
             'Sell Value',
-            'Total P&L'
+            'Total P&L',
+            '% P&L'
         )
         
-        self.table_tree = ttk.Treeview(
+        table_tree = ttk.Treeview(
             table_frame,
             columns=columns,
             show='headings',
@@ -199,79 +283,78 @@ class PivotAnalysisApp:
             'Value (End)': 120,
             'Purchase Value': 130,
             'Sell Value': 120,
-            'Total P&L': 120
+            'Total P&L': 120,
+            '% P&L': 100
         }
         
         for col in columns:
-            self.table_tree.heading(col, text=col)
-            self.table_tree.column(col, width=column_widths.get(col, 100), anchor='center')
+            table_tree.heading(col, text=col)
+            table_tree.column(col, width=column_widths.get(col, 100), anchor='center')
         
         # Scrollbars
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.table_tree.yview)
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table_tree.xview)
-        self.table_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=table_tree.yview)
+        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=table_tree.xview)
+        table_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
         # Grid layout
-        self.table_tree.grid(row=0, column=0, sticky='nsew')
+        table_tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
         hsb.grid(row=1, column=0, sticky='ew')
         
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
+        
+        return table_tree
     
-    def on_tree_select(self, event):
-        """Handle tree selection"""
-        selection = self.tree.selection()
-        if not selection:
+    def generate_all_pivots(self):
+        """Generate pivot tables for all durations"""
+        if not hasattr(self, 'current_broker'):
+            messagebox.showwarning("Warning", "Please select a broker first")
             return
         
-        item = self.tree.item(selection[0])
-        values = item['values']
-        
-        if len(values) == 2 and values[1]:  # Has duration
-            broker, duration = values
-            self.current_selection = {'broker': broker, 'duration': duration}
-    
-    def generate_pivot(self):
-        """Generate pivot table based on selection"""
-        if not hasattr(self, 'current_selection'):
-            messagebox.showwarning("Warning", "Please select a broker and duration from the tree")
-            return
-        
-        broker = self.current_selection['broker']
-        duration = self.current_selection['duration']
+        broker = self.current_broker
         end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
         
-        # Calculate start date based on duration
-        duration_map = {
-            '1M': 1,
-            '3M': 3,
-            '6M': 6,
-            '9M': 9,
-            '12M': 12
-        }
+        self.current_pivot_data[broker] = {}
         
-        months = duration_map.get(duration, 1)
-        start_date = end_date - timedelta(days=months * 30)  # Approximate
+        for duration_code, widget_info in self.duration_widgets.items():
+            try:
+                start_date_str = widget_info['entry'].get()
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+                
+                # Generate pivot data
+                pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(
+                    broker, start_date, end_date
+                )
+                
+                if pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
+                    # Store pivot data
+                    self.current_pivot_data[broker][duration_code] = {
+                        'start_date': actual_start_date,
+                        'end_date': actual_end_date,
+                        'data': pivot_df
+                    }
+                    
+                    # Display in corresponding tab
+                    self.display_pivot_table(
+                        pivot_df, 
+                        broker, 
+                        duration_code, 
+                        actual_start_date, 
+                        actual_end_date,
+                        self.table_frames[duration_code]
+                    )
+                else:
+                    # Clear the tab if no data
+                    table_tree = self.table_frames[duration_code]
+                    for item in table_tree.get_children():
+                        table_tree.delete(item)
+                    
+            except Exception as e:
+                messagebox.showerror("Error", f"Error generating {duration_code}: {str(e)}")
         
-        # Generate pivot data and get actual dates
-        pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(broker, start_date, end_date)
-        
-        if pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
-            # Store current pivot with actual dates
-            key = f"{broker}_{duration}_{end_date.date()}"
-            self.current_pivot_data[key] = {
-                'broker': broker,
-                'duration': duration,
-                'start_date': actual_start_date,
-                'end_date': actual_end_date,
-                'data': pivot_df
-            }
-            
-            # Display pivot with actual dates
-            self.display_pivot_table(pivot_df, broker, duration, actual_start_date, actual_end_date)
-        else:
-            messagebox.showinfo("No Data", "No data found for the selected criteria")
+        self.table_title.config(text=f"Pivot Tables for {broker}")
+        messagebox.showinfo("Success", f"All pivot tables generated for {broker}")
     
     def calculate_pivot_table(self, broker, start_date, end_date):
         """Calculate pivot table data with aggregation across files"""
@@ -353,8 +436,14 @@ class PivotAnalysisApp:
                 ]
                 sell_value = (sells['Sell Price'] * sells['Quantity']).sum()
             
-            # Calculate net change
+            # Calculate net change and percentage
             net_change = value_end - value_start + sell_value - purchase_value
+            
+            # Calculate percentage P&L
+            if value_start > 0:
+                pct_pl = (net_change / value_start) * 100
+            else:
+                pct_pl = 0
             
             # Only include if there's any activity
             if qty_start > 0 or qty_end > 0 or purchase_value > 0 or sell_value > 0:
@@ -366,32 +455,17 @@ class PivotAnalysisApp:
                     'Value (End)': round(value_end, 2),
                     'Purchase Value': round(purchase_value, 2),
                     'Sell Value': round(sell_value, 2),
-                    'Total P&L': round(net_change, 2)
+                    'Total P&L': round(net_change, 2),
+                    '% P&L': round(pct_pl, 2)
                 })
         
         return pd.DataFrame(pivot_data), actual_start_date, actual_end_date
     
-    def display_pivot_table(self, pivot_df, broker, duration, start_date, end_date):
+    def display_pivot_table(self, pivot_df, broker, duration, start_date, end_date, table_tree):
         """Display pivot table in the treeview"""
-        # Format dates
-        if isinstance(start_date, pd.Timestamp):
-            start_date_str = start_date.strftime('%Y-%m-%d')
-        else:
-            start_date_str = start_date.strftime('%Y-%m-%d')
-            
-        if isinstance(end_date, pd.Timestamp):
-            end_date_str = end_date.strftime('%Y-%m-%d')
-        else:
-            end_date_str = end_date.strftime('%Y-%m-%d')
-        
-        # Update title with actual dates from data
-        self.table_title.config(
-            text=f"{broker} - {duration} | {start_date_str} to {end_date_str}"
-        )
-        
         # Clear existing data
-        for item in self.table_tree.get_children():
-            self.table_tree.delete(item)
+        for item in table_tree.get_children():
+            table_tree.delete(item)
         
         # Insert data
         for _, row in pivot_df.iterrows():
@@ -403,9 +477,19 @@ class PivotAnalysisApp:
                 f"₹{row['Value (End)']:,.2f}",
                 f"₹{row['Purchase Value']:,.2f}",
                 f"₹{row['Sell Value']:,.2f}",
-                f"₹{row['Total P&L']:,.2f}"
+                f"₹{row['Total P&L']:,.2f}",
+                f"{row['% P&L']:.2f}%"
             )
-            self.table_tree.insert('', 'end', values=values)
+            table_tree.insert('', 'end', values=values)
+        
+        # Calculate average percentage P&L
+        total_start_value = pivot_df['Value (Start)'].sum()
+        total_pl = pivot_df['Total P&L'].sum()
+        
+        if total_start_value > 0:
+            avg_pct_pl = (total_pl / total_start_value) * 100
+        else:
+            avg_pct_pl = 0
         
         # Add total row
         totals = (
@@ -416,74 +500,79 @@ class PivotAnalysisApp:
             f"₹{pivot_df['Value (End)'].sum():,.2f}",
             f"₹{pivot_df['Purchase Value'].sum():,.2f}",
             f"₹{pivot_df['Sell Value'].sum():,.2f}",
-            f"₹{pivot_df['Total P&L'].sum():,.2f}"
+            f"₹{total_pl:,.2f}",
+            f"{avg_pct_pl:.2f}%"
         )
-        total_item = self.table_tree.insert('', 'end', values=totals, tags=('total',))
-        self.table_tree.tag_configure('total', background='lightgray', font=('Arial', 9, 'bold'))
+        total_item = table_tree.insert('', 'end', values=totals, tags=('total',))
+        table_tree.tag_configure('total', background='lightgray', font=('Arial', 9, 'bold'))
     
-    def download_current_table(self):
-        """Download currently displayed pivot table"""
-        if not self.current_pivot_data:
-            messagebox.showwarning("Warning", "No pivot table generated yet")
+    def download_selected_broker(self):
+        """Download Excel file with all duration sheets for selected broker"""
+        if not hasattr(self, 'current_broker'):
+            messagebox.showwarning("Warning", "Please select a broker first")
             return
         
-        # Get the last generated pivot
-        last_key = list(self.current_pivot_data.keys())[-1]
-        pivot_info = self.current_pivot_data[last_key]
+        broker = self.current_broker
+        
+        if broker not in self.current_pivot_data or not self.current_pivot_data[broker]:
+            messagebox.showwarning("Warning", "No pivot data generated. Please generate pivots first.")
+            return
         
         # Create output directory
         output_dir = './pivot_tables'
         os.makedirs(output_dir, exist_ok=True)
         
-        # Get actual dates
-        start_date = pivot_info['start_date']
-        end_date = pivot_info['end_date']
-        
-        # Format dates for display
-        if isinstance(start_date, pd.Timestamp):
-            start_date_str = start_date.strftime('%Y-%m-%d')
-        else:
-            start_date_str = start_date.strftime('%Y-%m-%d')
-            
-        if isinstance(end_date, pd.Timestamp):
-            end_date_str = end_date.strftime('%Y-%m-%d')
-        else:
-            end_date_str = end_date.strftime('%Y-%m-%d')
-        
-        # Rename columns with actual dates
-        df_to_save = pivot_info['data'].copy()
-        df_to_save.columns = [
-            'Stock Name',
-            f'Quantity as on {start_date_str}',
-            f'Total Value as on {start_date_str}',
-            f'Quantity as on {end_date_str}',
-            f'Total Value as on {end_date_str}',
-            'Purchase Value',
-            'Sell Value',
-            'Total P&L'
-        ]
-        
-        # Create filename
-        filename = f"pivot_{pivot_info['broker']}_{pivot_info['duration']}_{end_date_str}.csv"
+        end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
+        filename = f"pivot_{broker}_{end_date.strftime('%Y-%m-%d')}.xlsx"
         filepath = os.path.join(output_dir, filename)
         
-        # Save
-        df_to_save.to_csv(filepath, index=False)
+        # Create Excel writer
+        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+            for duration_code in ['1M', '3M', '6M', '9M', '12M']:
+                if duration_code in self.current_pivot_data[broker]:
+                    pivot_info = self.current_pivot_data[broker][duration_code]
+                    
+                    # Format dates
+                    start_date = pivot_info['start_date']
+                    end_date_actual = pivot_info['end_date']
+                    
+                    if isinstance(start_date, pd.Timestamp):
+                        start_date_str = start_date.strftime('%Y-%m-%d')
+                    else:
+                        start_date_str = start_date.strftime('%Y-%m-%d')
+                        
+                    if isinstance(end_date_actual, pd.Timestamp):
+                        end_date_str = end_date_actual.strftime('%Y-%m-%d')
+                    else:
+                        end_date_str = end_date_actual.strftime('%Y-%m-%d')
+                    
+                    # Rename columns with actual dates
+                    df_to_save = pivot_info['data'].copy()
+                    df_to_save.columns = [
+                        'Stock Name',
+                        f'Quantity as on {start_date_str}',
+                        f'Total Value as on {start_date_str}',
+                        f'Quantity as on {end_date_str}',
+                        f'Total Value as on {end_date_str}',
+                        'Purchase Value',
+                        'Sell Value',
+                        'Total P&L',
+                        '% P&L'
+                    ]
+                    
+                    # Write to Excel sheet
+                    df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
         
-        messagebox.showinfo("Success", f"Pivot table saved to:\n{filepath}")
+        messagebox.showinfo("Success", f"Excel file saved to:\n{filepath}")
     
-    def download_all_pivot_tables(self):
-        """Generate and download pivot tables for all brokers and durations"""
+    def download_all_brokers(self):
+        """Generate and download Excel files for all brokers with all duration sheets"""
         end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
         
         output_dir = './pivot_tables'
         os.makedirs(output_dir, exist_ok=True)
         
         durations = ['1M', '3M', '6M', '9M', '12M']
-        duration_map = {'1M': 1, '3M': 3, '6M': 6, '9M': 9, '12M': 12}
-        
-        total_files = len(self.all_brokers) * len(durations)
-        count = 0
         
         # Create progress window
         progress_window = tk.Toplevel(self.root)
@@ -493,52 +582,69 @@ class PivotAnalysisApp:
         progress_label = ttk.Label(progress_window, text="Generating pivot tables...")
         progress_label.pack(pady=10)
         
-        progress_bar = ttk.Progressbar(progress_window, length=350, mode='determinate', maximum=total_files)
+        progress_bar = ttk.Progressbar(
+            progress_window, 
+            length=350, 
+            mode='determinate', 
+            maximum=len(self.all_brokers)
+        )
         progress_bar.pack(pady=10)
         
+        count = 0
+        
         for broker in self.all_brokers:
-            for duration in durations:
-                months = duration_map[duration]
-                start_date = end_date - timedelta(days=months * 30)
-                
-                pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(broker, start_date, end_date)
-                
-                if pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
-                    # Format dates for column names
-                    if isinstance(actual_start_date, pd.Timestamp):
-                        start_date_str = actual_start_date.strftime('%Y-%m-%d')
-                    else:
-                        start_date_str = actual_start_date.strftime('%Y-%m-%d')
+            filename = f"pivot_{broker}_{end_date.strftime('%Y-%m-%d')}.xlsx"
+            filepath = os.path.join(output_dir, filename)
+            
+            # Create Excel writer
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                for duration_code, widget_info in self.duration_widgets.items():
+                    try:
+                        start_date_str = widget_info['entry'].get()
+                        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
                         
-                    if isinstance(actual_end_date, pd.Timestamp):
-                        end_date_str = actual_end_date.strftime('%Y-%m-%d')
-                    else:
-                        end_date_str = actual_end_date.strftime('%Y-%m-%d')
-                    
-                    # Rename columns with actual dates
-                    df_to_save = pivot_df.copy()
-                    df_to_save.columns = [
-                        'Stock Name',
-                        f'Quantity as on {start_date_str}',
-                        f'Total Value as on {start_date_str}',
-                        f'Quantity as on {end_date_str}',
-                        f'Total Value as on {end_date_str}',
-                        'Purchase Value',
-                        'Sell Value',
-                        'Total P&L'
-                    ]
-                    
-                    filename = f"pivot_{broker}_{duration}_{end_date_str}.csv"
-                    filepath = os.path.join(output_dir, filename)
-                    df_to_save.to_csv(filepath, index=False)
-                
-                count += 1
-                progress_bar['value'] = count
-                progress_label.config(text=f"Generating: {broker} - {duration} ({count}/{total_files})")
-                progress_window.update()
+                        pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(
+                            broker, start_date, end_date
+                        )
+                        
+                        if pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
+                            # Format dates for column names
+                            if isinstance(actual_start_date, pd.Timestamp):
+                                start_date_str_fmt = actual_start_date.strftime('%Y-%m-%d')
+                            else:
+                                start_date_str_fmt = actual_start_date.strftime('%Y-%m-%d')
+                                
+                            if isinstance(actual_end_date, pd.Timestamp):
+                                end_date_str = actual_end_date.strftime('%Y-%m-%d')
+                            else:
+                                end_date_str = actual_end_date.strftime('%Y-%m-%d')
+                            
+                            # Rename columns with actual dates
+                            df_to_save = pivot_df.copy()
+                            df_to_save.columns = [
+                                'Stock Name',
+                                f'Quantity as on {start_date_str_fmt}',
+                                f'Total Value as on {start_date_str_fmt}',
+                                f'Quantity as on {end_date_str}',
+                                f'Total Value as on {end_date_str}',
+                                'Purchase Value',
+                                'Sell Value',
+                                'Total P&L',
+                                '% P&L'
+                            ]
+                            
+                            # Write to Excel sheet
+                            df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
+                    except Exception as e:
+                        print(f"Error processing {broker} - {duration_code}: {str(e)}")
+            
+            count += 1
+            progress_bar['value'] = count
+            progress_label.config(text=f"Generating: {broker} ({count}/{len(self.all_brokers)})")
+            progress_window.update()
         
         progress_window.destroy()
-        messagebox.showinfo("Success", f"All pivot tables saved to:\n{output_dir}/")
+        messagebox.showinfo("Success", f"All Excel files saved to:\n{output_dir}/")
     
     def generate_drill_down_csv(self):
         """Generate filtered drill down CSV (original functionality)"""
