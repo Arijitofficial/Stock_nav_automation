@@ -92,6 +92,10 @@ class PivotAnalysisApp:
         self.end_date_entry.pack(pady=5)
         self.end_date_entry.bind('<<DateEntrySelected>>', self.on_end_date_change)
         
+        # Label to show adjusted end date
+        self.end_date_label = ttk.Label(date_frame, text="", foreground='blue')
+        self.end_date_label.pack(pady=2)
+        
         # Duration Selection Frame
         duration_frame = ttk.LabelFrame(parent, text="Duration Start Dates", padding=10)
         duration_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -107,6 +111,8 @@ class PivotAnalysisApp:
             
             date_entry = ttk.Entry(row_frame, width=12)
             date_entry.pack(side=tk.LEFT, padx=5)
+            date_entry.bind('<FocusOut>', lambda e, dc=duration_code: self.on_duration_date_change(dc))
+            date_entry.bind('<Return>', lambda e, dc=duration_code: self.on_duration_date_change(dc))
             
             available_label = ttk.Label(row_frame, text="", foreground='blue')
             available_label.pack(side=tk.LEFT, padx=5)
@@ -143,7 +149,7 @@ class PivotAnalysisApp:
         
         ttk.Button(
             button_frame,
-            text="Generate Tables for Broker",
+            text="Generate Pivots For Broker",
             command=self.generate_all_pivots
         ).pack(fill=tk.X, pady=2)
         
@@ -168,8 +174,26 @@ class PivotAnalysisApp:
     def on_end_date_change(self, event=None):
         """Handle end date change and calculate duration start dates"""
         try:
-            end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
+            end_date_str = self.end_date_entry.get()
+            if not end_date_str or end_date_str.strip() == '':
+                return
+                
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
             
+            # Find and set closest available end date
+            closest_end_date = self.find_closest_date(end_date)
+            if closest_end_date:
+                # Update the DateEntry widget
+                self.end_date_entry.set_date(closest_end_date)
+                self.end_date_label.config(
+                    text=f"Adjusted to: {closest_end_date.strftime('%Y-%m-%d')}"
+                )
+                end_date = closest_end_date
+            else:
+                self.end_date_label.config(text="No data available")
+                return
+            
+            # Calculate duration start dates
             for duration_code, widget_info in self.duration_widgets.items():
                 months = widget_info['months']
                 
@@ -193,8 +217,46 @@ class PivotAnalysisApp:
                     widget_info['entry'].insert(0, target_start_date.strftime('%Y-%m-%d'))
                     widget_info['label'].config(text="(No data)")
                     
+        except ValueError:
+            # Invalid date format
+            pass
         except Exception as e:
             messagebox.showerror("Error", f"Error calculating dates: {str(e)}")
+    
+    def on_duration_date_change(self, duration_code):
+        """Handle manual change to duration start date"""
+        try:
+            widget_info = self.duration_widgets[duration_code]
+            date_str = widget_info['entry'].get()
+            
+            if not date_str or date_str.strip() == '':
+                widget_info['label'].config(text="(Empty)")
+                return
+            
+            # Parse the entered date
+            entered_date = datetime.strptime(date_str, '%Y-%m-%d')
+            
+            # Find closest available date
+            closest_date = self.find_closest_date(entered_date)
+            
+            if closest_date:
+                # Update entry with closest date
+                widget_info['entry'].delete(0, tk.END)
+                widget_info['entry'].insert(0, closest_date.strftime('%Y-%m-%d'))
+                
+                # Update label
+                widget_info['label'].config(
+                    text=f"(Available: {closest_date.strftime('%Y-%m-%d')})"
+                )
+            else:
+                widget_info['label'].config(text="(No data)")
+                
+        except ValueError:
+            # Invalid date format
+            widget_info = self.duration_widgets[duration_code]
+            widget_info['label'].config(text="(Invalid format)")
+        except Exception as e:
+            print(f"Error processing duration date: {str(e)}")
     
     def find_closest_date(self, target_date):
         """Find the closest available date in the drill_down data"""
@@ -312,14 +374,28 @@ class PivotAnalysisApp:
             messagebox.showwarning("Warning", "Please select a broker first")
             return
         
-        broker = self.current_broker
-        end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
+        # Validate end date
+        try:
+            end_date_str = self.end_date_entry.get()
+            if not end_date_str or end_date_str.strip() == '':
+                messagebox.showwarning("Warning", "Please select an end date")
+                return
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Error", "Invalid end date format")
+            return
         
+        broker = self.current_broker
         self.current_pivot_data[broker] = {}
         
         for duration_code, widget_info in self.duration_widgets.items():
             try:
                 start_date_str = widget_info['entry'].get()
+                
+                if not start_date_str or start_date_str.strip() == '':
+                    messagebox.showwarning("Warning", f"Start date for {duration_code} is empty")
+                    continue
+                    
                 start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
                 
                 # Generate pivot data
@@ -350,6 +426,8 @@ class PivotAnalysisApp:
                     for item in table_tree.get_children():
                         table_tree.delete(item)
                     
+            except ValueError:
+                messagebox.showerror("Error", f"Invalid date format for {duration_code}")
             except Exception as e:
                 messagebox.showerror("Error", f"Error generating {duration_code}: {str(e)}")
         
@@ -567,7 +645,16 @@ class PivotAnalysisApp:
     
     def download_all_brokers(self):
         """Generate and download Excel files for all brokers with all duration sheets"""
-        end_date = datetime.strptime(self.end_date_entry.get(), '%Y-%m-%d')
+        # Validate end date
+        try:
+            end_date_str = self.end_date_entry.get()
+            if not end_date_str or end_date_str.strip() == '':
+                messagebox.showwarning("Warning", "Please select an end date")
+                return
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Error", "Invalid end date format")
+            return
         
         output_dir = './pivot_tables'
         os.makedirs(output_dir, exist_ok=True)
@@ -601,6 +688,10 @@ class PivotAnalysisApp:
                 for duration_code, widget_info in self.duration_widgets.items():
                     try:
                         start_date_str = widget_info['entry'].get()
+                        
+                        if not start_date_str or start_date_str.strip() == '':
+                            continue
+                            
                         start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
                         
                         pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(
@@ -633,8 +724,33 @@ class PivotAnalysisApp:
                                 '% P&L'
                             ]
                             
+                            # Add total row
+                            total_start_value = pivot_df['Value (Start)'].sum()
+                            total_pl = pivot_df['Total P&L'].sum()
+                            
+                            if total_start_value > 0:
+                                avg_pct_pl = (total_pl / total_start_value) * 100
+                            else:
+                                avg_pct_pl = 0
+                            
+                            total_row = pd.DataFrame([{
+                                'Stock Name': 'TOTAL',
+                                f'Quantity as on {start_date_str_fmt}': '',
+                                f'Total Value as on {start_date_str_fmt}': pivot_df['Value (Start)'].sum(),
+                                f'Quantity as on {end_date_str}': '',
+                                f'Total Value as on {end_date_str}': pivot_df['Value (End)'].sum(),
+                                'Purchase Value': pivot_df['Purchase Value'].sum(),
+                                'Sell Value': pivot_df['Sell Value'].sum(),
+                                'Total P&L': total_pl,
+                                '% P&L': avg_pct_pl
+                            }])
+                            
+                            df_to_save = pd.concat([df_to_save, total_row], ignore_index=True)
+                            
                             # Write to Excel sheet
                             df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
+                    except ValueError:
+                        print(f"Invalid date format for {broker} - {duration_code}")
                     except Exception as e:
                         print(f"Error processing {broker} - {duration_code}: {str(e)}")
             
