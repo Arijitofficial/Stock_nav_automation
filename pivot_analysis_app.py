@@ -165,11 +165,11 @@ class PivotAnalysisApp:
             command=self.download_all_brokers
         ).pack(fill=tk.X, pady=2)
         
-        ttk.Button(
-            button_frame,
-            text="Generate Drill Down CSV",
-            command=self.generate_drill_down_csv
-        ).pack(fill=tk.X, pady=2)
+        # ttk.Button(
+        #     button_frame,
+        #     text="Generate Drill Down CSV",
+        #     command=self.generate_drill_down_csv
+        # ).pack(fill=tk.X, pady=2)
     
     def on_end_date_change(self, event=None):
         """Handle end date change and calculate duration start dates"""
@@ -434,6 +434,39 @@ class PivotAnalysisApp:
         self.table_title.config(text=f"Pivot Tables for {broker}")
         messagebox.showinfo("Success", f"All pivot tables generated for {broker}")
     
+
+    def add_total_row(self, pivot_df: pd.DataFrame) -> pd.DataFrame:
+        """Add TOTAL row directly into pivot dataframe"""
+
+        if pivot_df.empty:
+            return pivot_df
+
+        total_start_value = pivot_df['Value (Start)'].sum()
+        total_end_value = pivot_df['Value (End)'].sum()
+        total_purchase = pivot_df['Purchase Value'].sum()
+        total_sell = pivot_df['Sell Value'].sum()
+        total_pl = pivot_df['Total P&L'].sum()
+
+        if total_start_value > 0:
+            avg_pct_pl = (total_pl / total_start_value) * 100
+        else:
+            avg_pct_pl = 0
+
+        total_row = pd.DataFrame([{
+            'Stock Name': 'TOTAL',
+            'Qty (Start)': '',
+            'Value (Start)': round(total_start_value, 2),
+            'Qty (End)': '',
+            'Value (End)': round(total_end_value, 2),
+            'Purchase Value': round(total_purchase, 2),
+            'Sell Value': round(total_sell, 2),
+            'Total P&L': round(total_pl, 2),
+            '% P&L': round(avg_pct_pl, 2)
+        }])
+
+        return pd.concat([pivot_df, total_row], ignore_index=True)
+
+
     def calculate_pivot_table(self, broker, start_date, end_date):
         """Calculate pivot table data with aggregation across files"""
         # Filter drill down data for the broker
@@ -536,8 +569,12 @@ class PivotAnalysisApp:
                     'Total P&L': round(net_change, 2),
                     '% P&L': round(pct_pl, 2)
                 })
-        
-        return pd.DataFrame(pivot_data), actual_start_date, actual_end_date
+
+        pivot_df = pd.DataFrame(pivot_data)
+        if pivot_df is not None and not pivot_df.empty:
+            pivot_df = self.add_total_row(pivot_df)
+
+        return pivot_df, actual_start_date, actual_end_date
     
     def display_pivot_table(self, pivot_df, broker, duration, start_date, end_date, table_tree):
         """Display pivot table in the treeview"""
@@ -547,42 +584,25 @@ class PivotAnalysisApp:
         
         # Insert data
         for _, row in pivot_df.iterrows():
+            is_total = row['Stock Name'] == 'TOTAL'
+
             values = (
                 row['Stock Name'],
-                f"{row['Qty (Start)']:.2f}",
-                f"₹{row['Value (Start)']:,.2f}",
-                f"{row['Qty (End)']:.2f}",
-                f"₹{row['Value (End)']:,.2f}",
+                row['Qty (Start)'],
+                f"₹{row['Value (Start)']:,.2f}" if row['Value (Start)'] != '' else '',
+                row['Qty (End)'],
+                f"₹{row['Value (End)']:,.2f}" if row['Value (End)'] != '' else '',
                 f"₹{row['Purchase Value']:,.2f}",
                 f"₹{row['Sell Value']:,.2f}",
                 f"₹{row['Total P&L']:,.2f}",
                 f"{row['% P&L']:.2f}%"
             )
-            table_tree.insert('', 'end', values=values)
-        
-        # Calculate average percentage P&L
-        total_start_value = pivot_df['Value (Start)'].sum()
-        total_pl = pivot_df['Total P&L'].sum()
-        
-        if total_start_value > 0:
-            avg_pct_pl = (total_pl / total_start_value) * 100
-        else:
-            avg_pct_pl = 0
-        
-        # Add total row
-        totals = (
-            'TOTAL',
-            '',
-            f"₹{pivot_df['Value (Start)'].sum():,.2f}",
-            '',
-            f"₹{pivot_df['Value (End)'].sum():,.2f}",
-            f"₹{pivot_df['Purchase Value'].sum():,.2f}",
-            f"₹{pivot_df['Sell Value'].sum():,.2f}",
-            f"₹{total_pl:,.2f}",
-            f"{avg_pct_pl:.2f}%"
-        )
-        total_item = table_tree.insert('', 'end', values=totals, tags=('total',))
+
+            tag = ('total',) if is_total else ()
+            table_tree.insert('', 'end', values=values, tags=tag)
+
         table_tree.tag_configure('total', background='lightgray', font=('Arial', 9, 'bold'))
+
     
     def download_selected_broker(self):
         """Download Excel file with all duration sheets for selected broker"""
@@ -626,6 +646,7 @@ class PivotAnalysisApp:
                     
                     # Rename columns with actual dates
                     df_to_save = pivot_info['data'].copy()
+                    print(df_to_save)
                     df_to_save.columns = [
                         'Stock Name',
                         f'Quantity as on {start_date_str}',
@@ -640,6 +661,9 @@ class PivotAnalysisApp:
                     
                     # Write to Excel sheet
                     df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
+
+                    worksheet = writer.sheets[duration_code]
+                    self.highlight_last_row_excel(worksheet)
         
         messagebox.showinfo("Success", f"Excel file saved to:\n{filepath}")
     
@@ -725,25 +749,25 @@ class PivotAnalysisApp:
                             ]
                             
                             # Add total row
-                            total_start_value = pivot_df['Value (Start)'].sum()
-                            total_pl = pivot_df['Total P&L'].sum()
+                            # total_start_value = pivot_df['Value (Start)'].sum()
+                            # total_pl = pivot_df['Total P&L'].sum()
                             
-                            if total_start_value > 0:
-                                avg_pct_pl = (total_pl / total_start_value) * 100
-                            else:
-                                avg_pct_pl = 0
+                            # if total_start_value > 0:
+                            #     avg_pct_pl = (total_pl / total_start_value) * 100
+                            # else:
+                            #     avg_pct_pl = 0
                             
-                            total_row = pd.DataFrame([{
-                                'Stock Name': 'TOTAL',
-                                f'Quantity as on {start_date_str_fmt}': '',
-                                f'Total Value as on {start_date_str_fmt}': pivot_df['Value (Start)'].sum(),
-                                f'Quantity as on {end_date_str}': '',
-                                f'Total Value as on {end_date_str}': pivot_df['Value (End)'].sum(),
-                                'Purchase Value': pivot_df['Purchase Value'].sum(),
-                                'Sell Value': pivot_df['Sell Value'].sum(),
-                                'Total P&L': total_pl,
-                                '% P&L': avg_pct_pl
-                            }])
+                            # total_row = pd.DataFrame([{
+                            #     'Stock Name': 'TOTAL',
+                            #     f'Quantity as on {start_date_str_fmt}': '',
+                            #     f'Total Value as on {start_date_str_fmt}': pivot_df['Value (Start)'].sum(),
+                            #     f'Quantity as on {end_date_str}': '',
+                            #     f'Total Value as on {end_date_str}': pivot_df['Value (End)'].sum(),
+                            #     'Purchase Value': pivot_df['Purchase Value'].sum(),
+                            #     'Sell Value': pivot_df['Sell Value'].sum(),
+                            #     'Total P&L': total_pl,
+                            #     '% P&L': avg_pct_pl
+                            # }])
                             
                             df_to_save = pd.concat([df_to_save, total_row], ignore_index=True)
                             
@@ -762,6 +786,29 @@ class PivotAnalysisApp:
         progress_window.destroy()
         messagebox.showinfo("Success", f"All Excel files saved to:\n{output_dir}/")
     
+    
+
+    def highlight_last_row_excel(self, worksheet):
+        from openpyxl.styles import Font, PatternFill, Border, Side
+        """Highlight last row (TOTAL) in an openpyxl worksheet"""
+
+        last_row = worksheet.max_row
+        last_col = worksheet.max_column
+
+        fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        font = Font(bold=True)
+        border = Border(
+            top=Side(style="medium"),
+            bottom=Side(style="thin")
+        )
+
+        for col in range(1, last_col + 1):
+            cell = worksheet.cell(row=last_row, column=col)
+            cell.fill = fill
+            cell.font = font
+            cell.border = border
+
+
     def generate_drill_down_csv(self):
         """Generate filtered drill down CSV (original functionality)"""
         # Create date selection dialog
