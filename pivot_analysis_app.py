@@ -669,7 +669,8 @@ class PivotAnalysisApp:
     
     def download_all_brokers(self):
         """Generate and download Excel files for all brokers with all duration sheets"""
-        # Validate end date
+
+        # -------------------- VALIDATE END DATE --------------------
         try:
             end_date_str = self.end_date_entry.get()
             if not end_date_str or end_date_str.strip() == '':
@@ -679,114 +680,132 @@ class PivotAnalysisApp:
         except ValueError:
             messagebox.showerror("Error", "Invalid end date format")
             return
-        
+
         output_dir = './pivot_tables'
         os.makedirs(output_dir, exist_ok=True)
-        
-        durations = ['1M', '3M', '6M', '9M', '12M']
-        
-        # Create progress window
+
+        # -------------------- UI --------------------
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Generating Pivot Tables")
-        progress_window.geometry("400x100")
-        
-        progress_label = ttk.Label(progress_window, text="Generating pivot tables...")
+        progress_window.geometry("420x120")
+        progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        progress_label = ttk.Label(progress_window, text="Preparing...")
         progress_label.pack(pady=10)
-        
+
         progress_bar = ttk.Progressbar(
-            progress_window, 
-            length=350, 
-            mode='determinate', 
+            progress_window,
+            length=380,
+            mode='determinate',
             maximum=len(self.all_brokers)
         )
         progress_bar.pack(pady=10)
-        
+
+        # -------------------- TRACKING --------------------
+        no_data_brokers = []
+        failed_brokers = []
+
         count = 0
-        
+
+        # -------------------- MAIN LOOP --------------------
         for broker in self.all_brokers:
             filename = f"pivot_{broker}_{end_date.strftime('%Y-%m-%d')}.xlsx"
             filepath = os.path.join(output_dir, filename)
-            
-            # Create Excel writer
-            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                for duration_code, widget_info in self.duration_widgets.items():
-                    try:
+
+            sheet_written = False
+
+            try:
+                with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                    for duration_code, widget_info in self.duration_widgets.items():
+
                         start_date_str = widget_info['entry'].get()
                         
                         if not start_date_str or start_date_str.strip() == '':
                             continue
-                            
+
                         start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-                        
+
                         pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(
                             broker, start_date, end_date
                         )
-                        
-                        if pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
-                            # Format dates for column names
-                            if isinstance(actual_start_date, pd.Timestamp):
-                                start_date_str_fmt = actual_start_date.strftime('%Y-%m-%d')
-                            else:
-                                start_date_str_fmt = actual_start_date.strftime('%Y-%m-%d')
-                                
-                            if isinstance(actual_end_date, pd.Timestamp):
-                                end_date_str = actual_end_date.strftime('%Y-%m-%d')
-                            else:
-                                end_date_str = actual_end_date.strftime('%Y-%m-%d')
-                            
-                            # Rename columns with actual dates
-                            df_to_save = pivot_df.copy()
-                            df_to_save.columns = [
-                                'Stock Name',
-                                f'Quantity as on {start_date_str_fmt}',
-                                f'Total Value as on {start_date_str_fmt}',
-                                f'Quantity as on {end_date_str}',
-                                f'Total Value as on {end_date_str}',
-                                'Purchase Value',
-                                'Sell Value',
-                                'Total P&L',
-                                '% P&L'
-                            ]
-                            
-                            # Add total row
-                            # total_start_value = pivot_df['Value (Start)'].sum()
-                            # total_pl = pivot_df['Total P&L'].sum()
-                            
-                            # if total_start_value > 0:
-                            #     avg_pct_pl = (total_pl / total_start_value) * 100
-                            # else:
-                            #     avg_pct_pl = 0
-                            
-                            # total_row = pd.DataFrame([{
-                            #     'Stock Name': 'TOTAL',
-                            #     f'Quantity as on {start_date_str_fmt}': '',
-                            #     f'Total Value as on {start_date_str_fmt}': pivot_df['Value (Start)'].sum(),
-                            #     f'Quantity as on {end_date_str}': '',
-                            #     f'Total Value as on {end_date_str}': pivot_df['Value (End)'].sum(),
-                            #     'Purchase Value': pivot_df['Purchase Value'].sum(),
-                            #     'Sell Value': pivot_df['Sell Value'].sum(),
-                            #     'Total P&L': total_pl,
-                            #     '% P&L': avg_pct_pl
-                            # }])
-                            
-                            df_to_save = pd.concat([df_to_save, total_row], ignore_index=True)
-                            
-                            # Write to Excel sheet
-                            df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
-                    except ValueError:
-                        print(f"Invalid date format for {broker} - {duration_code}")
-                    except Exception as e:
-                        print(f"Error processing {broker} - {duration_code}: {str(e)}")
-            
+
+                        if pivot_df is None or pivot_df.empty:
+                            continue
+
+                        # TOTAL already exists inside pivot_df
+                        df_to_save = pivot_df.copy()
+
+                        if actual_start_date is None or actual_end_date is None:
+                            continue  # skip this duration safely
+
+                        # Format column headers
+                        start_str = actual_start_date.strftime('%Y-%m-%d')
+                        end_str = actual_end_date.strftime('%Y-%m-%d')
+
+                        df_to_save.columns = [
+                            'Stock Name',
+                            f'Quantity as on {start_str}',
+                            f'Total Value as on {start_str}',
+                            f'Quantity as on {end_str}',
+                            f'Total Value as on {end_str}',
+                            'Purchase Value',
+                            'Sell Value',
+                            'Total P&L',
+                            '% P&L'
+                        ]
+
+                        df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
+
+                        worksheet = writer.sheets[duration_code]
+                        self.highlight_last_row_excel(worksheet)
+
+                        sheet_written = True
+
+                if not sheet_written:
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                    no_data_brokers.append(broker)
+
+            # -------------------- PERMISSION ERROR --------------------
+            except PermissionError:
+                progress_window.destroy()
+                messagebox.showerror(
+                    "File in Use",
+                    f"Permission denied while saving:\n\n{filename}\n\n"
+                    "Please close any open Excel files with this name,\n"
+                    "then close this window and try again."
+                )
+                return
+
+            # -------------------- OTHER ERRORS --------------------
+            except Exception as e:
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                failed_brokers.append(f"{broker}: {str(e)}")
+
+            # -------------------- UPDATE UI --------------------
             count += 1
             progress_bar['value'] = count
-            progress_label.config(text=f"Generating: {broker} ({count}/{len(self.all_brokers)})")
-            progress_window.update()
-        
+            progress_label.config(
+                text=f"Processing {broker} ({count}/{len(self.all_brokers)})"
+            )
+            progress_window.update_idletasks()
+
         progress_window.destroy()
-        messagebox.showinfo("Success", f"All Excel files saved to:\n{output_dir}/")
-    
-    
+
+        # -------------------- FINAL SUMMARY --------------------
+        summary = "Download completed.\n\n"
+
+        if no_data_brokers:
+            summary += "No data found for:\n"
+            summary += ", ".join(no_data_brokers) + "\n\n"
+
+        if failed_brokers:
+            summary += "Failed brokers:\n"
+            summary += "\n".join(failed_brokers)
+
+        messagebox.showinfo("Completed", summary)
+
 
     def highlight_last_row_excel(self, worksheet):
         from openpyxl.styles import Font, PatternFill, Border, Side
