@@ -46,7 +46,6 @@ class CorporateActionsHandler:
         cfca_df['EX-DATE'] = pd.to_datetime(cfca_df['EX-DATE'])
         
         # Calculate adjustment ratio (to_value / from_value)
-        cfca_df['price_adjustment_ratio'] = cfca_df['to_value'] / cfca_df['from_value']
         cfca_df['volume_adjustment_ratio'] = cfca_df['from_value'] / cfca_df['to_value']
         
         # Sort by date for chronological processing
@@ -114,7 +113,7 @@ class CorporateActionsHandler:
 
         for _, action in actions_today.iterrows():
             symbol = action['SYMBOL']
-            ratio = action['volume_adjustment_ratio']   # forward multiplier
+            ratio = action['volume_adjustment_ratio']
 
             mask = (df["NSE Name "] == symbol) & (df['DOP'] <= current_date)
             if mask.any():
