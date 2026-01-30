@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import datetime, timedelta
 import os
+import json
 import tkinter as tk
 from tkinter import messagebox, ttk
 from tkcalendar import DateEntry
@@ -19,9 +20,11 @@ class PivotAnalysisApp:
         self.current_pivot_data = {}
         self.all_brokers = []
         self.duration_dates = {}
+        self.dates_included = []
         
         # Load data
         self.load_data()
+        self.load_config_dates()
         
         # Create UI
         self.create_ui()
@@ -51,6 +54,32 @@ class PivotAnalysisApp:
         else:
             messagebox.showwarning("Warning", "Sell/Purchase track file not found. Purchase/Sell values may be inaccurate.")
             self.sell_purchase_df = pd.DataFrame()
+    
+    def load_config_dates(self):
+        """Load dates_included from defaults.json to validate data availability"""
+        config_file = "defaults.json"
+        self.dates_included = []
+        
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, "r") as f:
+                    data = json.load(f)
+                    self.dates_included = data.get("dates_included", [])
+            except Exception as e:
+                print(f"Failed to load config dates: {e}")
+
+    def is_date_in_processed_range(self, check_date):
+        """Check if a date falls within any processed date range"""
+        if not self.dates_included:
+            return True  # If no config, assume all dates valid
+        
+        check_date_str = check_date.strftime('%Y-%m-%d')
+        
+        for start_str, end_str in self.dates_included:
+            if start_str <= check_date_str <= end_str:
+                return True
+        
+        return False
     
     def create_ui(self):
         """Create the main user interface"""
@@ -125,11 +154,11 @@ class PivotAnalysisApp:
         
         # Broker Selection Frame
         broker_frame = ttk.LabelFrame(parent, text="Select Broker", padding=10)
-        broker_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        broker_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # Tree view for broker selection
-        self.tree = ttk.Treeview(broker_frame, selectmode='browse', height=10)
-        self.tree.pack(fill=tk.BOTH, expand=True)
+        # Tree view for broker selection with fixed height
+        self.tree = ttk.Treeview(broker_frame, selectmode='browse', height=8)
+        self.tree.pack(fill=tk.X)
         
         # Scrollbar for tree
         tree_scroll = ttk.Scrollbar(broker_frame, orient="vertical", command=self.tree.yview)
@@ -151,19 +180,25 @@ class PivotAnalysisApp:
             button_frame,
             text="Generate Pivots For Broker",
             command=self.generate_all_pivots
-        ).pack(fill=tk.X, pady=2)
+        ).pack(fill=tk.X, pady=3)
         
         ttk.Button(
             button_frame,
             text="Download Selected Broker",
             command=self.download_selected_broker
-        ).pack(fill=tk.X, pady=2)
+        ).pack(fill=tk.X, pady=3)
         
         ttk.Button(
             button_frame,
             text="Download All Brokers",
             command=self.download_all_brokers
-        ).pack(fill=tk.X, pady=2)
+        ).pack(fill=tk.X, pady=3)
+        
+        ttk.Button(
+            button_frame,
+            text="Download Overall (All Brokers)",
+            command=self.download_overall
+        ).pack(fill=tk.X, pady=3)
         
         # ttk.Button(
         #     button_frame,
@@ -403,7 +438,22 @@ class PivotAnalysisApp:
                     broker, start_date, end_date
                 )
                 
-                if pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
+                # Handle data not available case
+                if isinstance(pivot_df, str) and pivot_df == "DATA_NOT_AVAILABLE":
+                    self.current_pivot_data[broker][duration_code] = {
+                        'start_date': start_date,
+                        'end_date': end_date,
+                        'data': "DATA_NOT_AVAILABLE"
+                    }
+                    self.display_pivot_table(
+                        "DATA_NOT_AVAILABLE", 
+                        broker, 
+                        duration_code, 
+                        start_date, 
+                        end_date,
+                        self.table_frames[duration_code]
+                    )
+                elif pivot_df is not None and not pivot_df.empty and actual_start_date and actual_end_date:
                     # Store pivot data
                     self.current_pivot_data[broker][duration_code] = {
                         'start_date': actual_start_date,
@@ -469,6 +519,12 @@ class PivotAnalysisApp:
 
     def calculate_pivot_table(self, broker, start_date, end_date):
         """Calculate pivot table data with aggregation across files"""
+        
+        # Check if dates are within processed ranges
+        if not self.is_date_in_processed_range(start_date) or not self.is_date_in_processed_range(end_date):
+            # Return special marker for missing data
+            return "DATA_NOT_AVAILABLE", None, None
+        
         # Filter drill down data for the broker
         broker_df = self.drill_down_df[self.drill_down_df['broker'] == broker].copy()
         
@@ -576,11 +632,118 @@ class PivotAnalysisApp:
 
         return pivot_df, actual_start_date, actual_end_date
     
+
+    def calculate_overall_pivot_table(self, start_date, end_date):
+        """Calculate pivot table for all brokers combined"""
+        
+        # Check if dates are within processed ranges
+        if not self.is_date_in_processed_range(start_date) or not self.is_date_in_processed_range(end_date):
+            return "DATA_NOT_AVAILABLE", None, None
+        
+        # Get all stocks across all brokers
+        stocks = self.drill_down_df['share name'].unique()
+        
+        pivot_data = []
+        actual_start_date = None
+        actual_end_date = None
+        
+        for stock in stocks:
+            stock_df = self.drill_down_df[self.drill_down_df['share name'] == stock]
+            
+            # Aggregate data at start date across all brokers and files
+            start_data = stock_df[stock_df['date'] <= start_date]
+            if not start_data.empty:
+                latest_start_date = start_data['date'].max()
+                start_data_on_date = start_data[start_data['date'] == latest_start_date]
+                
+                if actual_start_date is None or latest_start_date < actual_start_date:
+                    actual_start_date = latest_start_date
+                
+                qty_start = start_data_on_date['quantity'].sum()
+                value_start = start_data_on_date['total market value'].sum()
+            else:
+                qty_start = 0
+                value_start = 0
+            
+            # Aggregate data at end date across all brokers and files
+            end_data = stock_df[stock_df['date'] <= end_date]
+            if not end_data.empty:
+                latest_end_date = end_data['date'].max()
+                end_data_on_date = end_data[end_data['date'] == latest_end_date]
+                
+                if actual_end_date is None or latest_end_date > actual_end_date:
+                    actual_end_date = latest_end_date
+                
+                qty_end = end_data_on_date['quantity'].sum()
+                value_end = end_data_on_date['total market value'].sum()
+            else:
+                qty_end = 0
+                value_end = 0
+            
+            # Calculate purchase and sell values across all brokers
+            purchase_value = 0
+            sell_value = 0
+            
+            if not self.sell_purchase_df.empty:
+                stock_transactions = self.sell_purchase_df[
+                    self.sell_purchase_df['Stock Symbol'] == stock
+                ]
+                
+                purchases = stock_transactions[
+                    (stock_transactions['Purchase Date'] >= start_date) &
+                    (stock_transactions['Purchase Date'] <= end_date) &
+                    (stock_transactions['Purchase Price'].notna())
+                ]
+                purchase_value = (purchases['Purchase Price'] * purchases['Quantity']).sum()
+                
+                sells = stock_transactions[
+                    (stock_transactions['Sell Date'] >= start_date) &
+                    (stock_transactions['Sell Date'] <= end_date) &
+                    (stock_transactions['Sell Price'].notna())
+                ]
+                sell_value = (sells['Sell Price'] * sells['Quantity']).sum()
+            
+            net_change = value_end - value_start + sell_value - purchase_value
+            
+            if value_start > 0:
+                pct_pl = (net_change / value_start) * 100
+            else:
+                pct_pl = 0
+            
+            if qty_start > 0 or qty_end > 0 or purchase_value > 0 or sell_value > 0:
+                pivot_data.append({
+                    'Stock Name': stock,
+                    'Qty (Start)': qty_start,
+                    'Value (Start)': round(value_start, 2),
+                    'Qty (End)': qty_end,
+                    'Value (End)': round(value_end, 2),
+                    'Purchase Value': round(purchase_value, 2),
+                    'Sell Value': round(sell_value, 2),
+                    'Total P&L': round(net_change, 2),
+                    '% P&L': round(pct_pl, 2)
+                })
+
+        pivot_df = pd.DataFrame(pivot_data)
+        if pivot_df is not None and not pivot_df.empty:
+            pivot_df = self.add_total_row(pivot_df)
+
+        return pivot_df, actual_start_date, actual_end_date
+    
+
     def display_pivot_table(self, pivot_df, broker, duration, start_date, end_date, table_tree):
         """Display pivot table in the treeview"""
         # Clear existing data
         for item in table_tree.get_children():
             table_tree.delete(item)
+        
+        # Check for data not available marker
+        if isinstance(pivot_df, str) and pivot_df == "DATA_NOT_AVAILABLE":
+            table_tree.insert('', 'end', values=(
+                'Sales/Purchase track not found',
+                '', '', '', '', '', '', '', ''
+            ), tags=('error',))
+            table_tree.tag_configure('error', foreground='red', font=('Arial', 10, 'bold'))
+            return
         
         # Insert data
         for _, row in pivot_df.iterrows():
@@ -625,48 +788,67 @@ class PivotAnalysisApp:
         filepath = os.path.join(output_dir, filename)
         
         # Create Excel writer
-        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            for duration_code in ['1M', '3M', '6M', '9M', '12M']:
-                if duration_code in self.current_pivot_data[broker]:
-                    pivot_info = self.current_pivot_data[broker][duration_code]
-                    
-                    # Format dates
-                    start_date = pivot_info['start_date']
-                    end_date_actual = pivot_info['end_date']
-                    
-                    if isinstance(start_date, pd.Timestamp):
-                        start_date_str = start_date.strftime('%Y-%m-%d')
-                    else:
-                        start_date_str = start_date.strftime('%Y-%m-%d')
+        try:
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                for duration_code in ['1M', '3M', '6M', '9M', '12M']:
+                    if duration_code in self.current_pivot_data[broker]:
+                        pivot_info = self.current_pivot_data[broker][duration_code]
                         
-                    if isinstance(end_date_actual, pd.Timestamp):
-                        end_date_str = end_date_actual.strftime('%Y-%m-%d')
-                    else:
-                        end_date_str = end_date_actual.strftime('%Y-%m-%d')
-                    
-                    # Rename columns with actual dates
-                    df_to_save = pivot_info['data'].copy()
-                    print(df_to_save)
-                    df_to_save.columns = [
-                        'Stock Name',
-                        f'Quantity as on {start_date_str}',
-                        f'Total Value as on {start_date_str}',
-                        f'Quantity as on {end_date_str}',
-                        f'Total Value as on {end_date_str}',
-                        'Purchase Value',
-                        'Sell Value',
-                        'Total P&L',
-                        '% P&L'
-                    ]
-                    
-                    # Write to Excel sheet
-                    df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
+                        # Check if data is not available
+                        if isinstance(pivot_info['data'], str) and pivot_info['data'] == "DATA_NOT_AVAILABLE":
+                            # Create a dataframe with error message
+                            error_df = pd.DataFrame([{
+                                'Message': 'Sales/Purchase track not found for this date range'
+                            }])
+                            error_df.to_excel(writer, sheet_name=duration_code, index=False)
+                            continue
+                        
+                        # Format dates
+                        start_date = pivot_info['start_date']
+                        end_date_actual = pivot_info['end_date']
+                        
+                        if isinstance(start_date, pd.Timestamp):
+                            start_date_str = start_date.strftime('%Y-%m-%d')
+                        else:
+                            start_date_str = start_date.strftime('%Y-%m-%d')
+                            
+                        if isinstance(end_date_actual, pd.Timestamp):
+                            end_date_str = end_date_actual.strftime('%Y-%m-%d')
+                        else:
+                            end_date_str = end_date_actual.strftime('%Y-%m-%d')
+                        
+                        # Rename columns with actual dates
+                        df_to_save = pivot_info['data'].copy()
+                        df_to_save.columns = [
+                            'Stock Name',
+                            f'Quantity as on {start_date_str}',
+                            f'Total Value as on {start_date_str}',
+                            f'Quantity as on {end_date_str}',
+                            f'Total Value as on {end_date_str}',
+                            'Purchase Value',
+                            'Sell Value',
+                            'Total P&L',
+                            '% P&L'
+                        ]
+                        
+                        # Write to Excel sheet
+                        df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
 
-                    worksheet = writer.sheets[duration_code]
-                    self.highlight_last_row_excel(worksheet)
-        
-        messagebox.showinfo("Success", f"Excel file saved to:\n{filepath}")
+                        worksheet = writer.sheets[duration_code]
+                        self.highlight_last_row_excel(worksheet)
+            
+            messagebox.showinfo("Success", f"Excel file saved to:\n{filepath}")
+            
+        except PermissionError:
+            messagebox.showerror(
+                "File in Use",
+                f"Permission denied while saving:\n\n{filename}\n\n"
+                "Please close the file if it's open and try again."
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save Excel file:\n{str(e)}")
     
+
     def download_all_brokers(self):
         """Generate and download Excel files for all brokers with all duration sheets"""
 
@@ -728,6 +910,15 @@ class PivotAnalysisApp:
                         pivot_df, actual_start_date, actual_end_date = self.calculate_pivot_table(
                             broker, start_date, end_date
                         )
+
+                        # Handle data not available
+                        if isinstance(pivot_df, str) and pivot_df == "DATA_NOT_AVAILABLE":
+                            error_df = pd.DataFrame([{
+                                'Message': 'Sales/Purchase track not found for this date range'
+                            }])
+                            error_df.to_excel(writer, sheet_name=duration_code, index=False)
+                            sheet_written = True
+                            continue
 
                         if pivot_df is None or pivot_df.empty:
                             continue
@@ -805,6 +996,87 @@ class PivotAnalysisApp:
             summary += "\n".join(failed_brokers)
 
         messagebox.showinfo("Completed", summary)
+
+
+    def download_overall(self):
+        """Download Excel file with overall (all brokers) pivot for all durations"""
+        
+        try:
+            end_date_str = self.end_date_entry.get()
+            if not end_date_str or end_date_str.strip() == '':
+                messagebox.showwarning("Warning", "Please select an end date")
+                return
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        except ValueError:
+            messagebox.showerror("Error", "Invalid end date format")
+            return
+        
+        output_dir = './pivot_tables'
+        os.makedirs(output_dir, exist_ok=True)
+        
+        filename = f"pivot_Overall_{end_date.strftime('%Y-%m-%d')}.xlsx"
+        filepath = os.path.join(output_dir, filename)
+        
+        try:
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                for duration_code, widget_info in self.duration_widgets.items():
+                    start_date_str = widget_info['entry'].get()
+                    
+                    if not start_date_str or start_date_str.strip() == '':
+                        continue
+
+                    start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+
+                    pivot_df, actual_start_date, actual_end_date = self.calculate_overall_pivot_table(
+                        start_date, end_date
+                    )
+
+                    # Handle data not available
+                    if isinstance(pivot_df, str) and pivot_df == "DATA_NOT_AVAILABLE":
+                        error_df = pd.DataFrame([{
+                            'Message': 'Sales/Purchase track not found for this date range'
+                        }])
+                        error_df.to_excel(writer, sheet_name=duration_code, index=False)
+                        continue
+
+                    if pivot_df is None or pivot_df.empty:
+                        continue
+
+                    if actual_start_date is None or actual_end_date is None:
+                        continue
+
+                    # Format column headers
+                    start_str = actual_start_date.strftime('%Y-%m-%d')
+                    end_str = actual_end_date.strftime('%Y-%m-%d')
+
+                    df_to_save = pivot_df.copy()
+                    df_to_save.columns = [
+                        'Stock Name',
+                        f'Quantity as on {start_str}',
+                        f'Total Value as on {start_str}',
+                        f'Quantity as on {end_str}',
+                        f'Total Value as on {end_str}',
+                        'Purchase Value',
+                        'Sell Value',
+                        'Total P&L',
+                        '% P&L'
+                    ]
+
+                    df_to_save.to_excel(writer, sheet_name=duration_code, index=False)
+
+                    worksheet = writer.sheets[duration_code]
+                    self.highlight_last_row_excel(worksheet)
+            
+            messagebox.showinfo("Success", f"Overall Excel file saved to:\n{filepath}")
+            
+        except PermissionError:
+            messagebox.showerror(
+                "File in Use",
+                f"Permission denied while saving:\n\n{filename}\n\n"
+                "Please close the file if it's open and try again."
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate overall pivot:\n{str(e)}")
 
 
     def highlight_last_row_excel(self, worksheet):

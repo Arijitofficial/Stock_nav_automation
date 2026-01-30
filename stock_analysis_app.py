@@ -32,6 +32,11 @@ class AppConfig:
     sheet_name: str = ""
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    dates_included: List[Tuple[str, str]] = None  # List of (start_date, end_date) pairs
+    
+    def __post_init__(self):
+        if self.dates_included is None:
+            self.dates_included = []
     
     @classmethod
     def load(cls, config_file: str = "defaults.json") -> 'AppConfig':
@@ -44,7 +49,8 @@ class AppConfig:
                         config_file=config_file,
                         main_file_path=data.get("main_file_path", ""),
                         sales_purchase_file_path=data.get("sales_purchase_file_path", ""),
-                        sheet_name=data.get("sheet_name", "")
+                        sheet_name=data.get("sheet_name", ""),
+                        dates_included=data.get("dates_included", [])
                     )
             except Exception as e:
                 logger.error(f"Failed to load config: {e}")
@@ -57,11 +63,51 @@ class AppConfig:
                 json.dump({
                     "main_file_path": self.main_file_path,
                     "sales_purchase_file_path": self.sales_purchase_file_path,
-                    "sheet_name": self.sheet_name
+                    "sheet_name": self.sheet_name,
+                    "dates_included": self.dates_included
                 }, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
-
+    
+    def add_date_range(self, start_date: date, end_date: date):
+        """Add a processed date range to dates_included"""
+        new_range = (start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        
+        # Add the new range if it doesn't overlap with existing ranges
+        if not any(self._ranges_overlap(new_range, existing) for existing in self.dates_included):
+            self.dates_included.append(new_range)
+        else:
+            # Merge overlapping ranges
+            self.dates_included = self._merge_ranges(self.dates_included + [new_range])
+    
+    @staticmethod
+    def _ranges_overlap(range1: Tuple[str, str], range2: Tuple[str, str]) -> bool:
+        """Check if two date ranges overlap"""
+        start1, end1 = range1
+        start2, end2 = range2
+        return not (end1 < start2 or end2 < start1)
+    
+    @staticmethod
+    def _merge_ranges(ranges: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        """Merge overlapping date ranges"""
+        if not ranges:
+            return []
+        
+        # Sort ranges by start date
+        sorted_ranges = sorted(ranges, key=lambda x: x[0])
+        merged = [sorted_ranges[0]]
+        
+        for current in sorted_ranges[1:]:
+            last = merged[-1]
+            # Check if current overlaps or is adjacent to last
+            if current[0] <= last[1]:
+                # Merge by extending the end date
+                merged[-1] = (last[0], max(last[1], current[1]))
+            else:
+                merged.append(current)
+        
+        return merged
+    
 
 class DataLoader:
     """Handles loading and preprocessing of data"""
@@ -357,7 +403,7 @@ class PortfolioProcessor:
                 # Update progress
                 days_processed += 1
                 if progress_callback and (days_processed % update_frequency == 0 or 
-                                         current_date == self.config.end_date):
+                                        current_date == self.config.end_date):
                     progress_callback(days_processed, total_days)
                 
                 current_date += timedelta(days=1)
@@ -366,12 +412,16 @@ class PortfolioProcessor:
             temp_df["No. "] = original_volume
             self._save_results(temp_df)
             
+            # Add processed date range to config
+            self.config.add_date_range(self.config.start_date, self.config.end_date)
+            self.config.save()
+            
             return True
             
         except Exception as e:
             logger.error(f"Processing failed: {e}", exc_info=True)
-            return False
-    
+            return False  
+        
     def _process_single_day(self, df: pd.DataFrame, current_date: date) -> bool:
         """Process portfolio for a single day"""
         
