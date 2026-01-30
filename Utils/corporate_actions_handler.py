@@ -1,5 +1,6 @@
 import math
 import pandas as pd
+import logging
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, Tuple, List
@@ -21,10 +22,14 @@ class CorporateActionsHandler:
         
     def _load_and_process_cfca(self, cfca_dir: str) -> pd.DataFrame:
         """Load and process CFCA data"""
+        logger = logging.getLogger(__name__)
+        logger.info("Starting CFCA load and processing for directory: %s", cfca_dir)
         from Utils.split_n_merge_handler import is_face_value_action, extract_face_values, get_latest_CFCA_file
         cfca_path = get_latest_CFCA_file(cfca_dir)
+        logger.info("Starting CFCA load and processing for directory: %s", cfca_path)
     
         cfca_df = pd.read_csv(cfca_path)
+        logger.info("CFCA data loaded from: %s", cfca_df.head())
         
         # Filter for face value actions only
         cfca_df = cfca_df[cfca_df["PURPOSE"].apply(lambda x: is_face_value_action(x))]
@@ -45,6 +50,9 @@ class CorporateActionsHandler:
         
         # Sort by date for chronological processing
         cfca_df = cfca_df.sort_values('EX-DATE')
+
+        cfca_df.to_csv("processed_cfca.csv", index=False)
+        logger.info("Processed CFCA data saved to processed_cfca.csv")
         
         return cfca_df
 
@@ -116,13 +124,16 @@ class CorporateActionsHandler:
     
     @staticmethod
     def _reverse_volume(units: float, ratio: float) -> int:
+        logger = logging.getLogger(__name__)
         """
         Reverse a split/consolidation effect while handling fractional units.
         
         Example: 3 units (2→5 split, ratio=2.5) → 7 units (forward)
                  7 units reversed → 3 units (not 2).
         """
+        logger.debug(f"Reversing volume: units={units}, ratio={ratio}")
         reversed_units = units / ratio
+        logger.debug(f"Reversed volume: {reversed_units}")
         # Round to nearest int, but ensure we don’t lose rightful units
         return math.ceil(reversed_units)
 
